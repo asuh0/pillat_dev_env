@@ -1,0 +1,38 @@
+# Статическая конфигурация Traefik
+api:
+  dashboard: true
+  insecure: true  # Для разработки, в продакшене использовать auth
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      tls: {}
+  dashboard:
+    address: ":8081"  # Dashboard порт внутри контейнера
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: infra_proxy
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+log:
+  level: INFO
+  filePath: /logs/traefik.log
+  format: json
+
+accessLog:
+  filePath: /logs/access.log
+  format: json

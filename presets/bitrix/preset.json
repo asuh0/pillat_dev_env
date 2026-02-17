@@ -1,0 +1,13 @@
+{
+  "name": "1C-Bitrix",
+  "slug": "bitrix",
+  "version": "1.0.0",
+  "description": "Bitrix preset for MVP with base nginx and .settings.php templates.",
+  "entrypoint": {
+    "install": "install.sh"
+  },
+  "templates": [
+    "nginx.conf.template",
+    ".settings.php.template"
+  ]
+}

@@ -1,0 +1,19 @@
+# macOS AppleDouble metadata files break Docker build context on external disks.
+**/._*
+
+# VCS/cache/noise
+.git
+.git/**
+.kittify
+.kittify/**
+.claudeignore
+
+# Runtime/generated directories not required to build devpanel image
+projects
+projects/**
+infra/state
+infra/state/**
+logs
+logs/**
+kitty-specs
+kitty-specs/**

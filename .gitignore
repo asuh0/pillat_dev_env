@@ -1,0 +1,60 @@
+# Секреты и локальные конфиги
+.env
+.env.global
+infra/.env.global
+*.env.local
+
+# SSL: все ключи и сертификаты (генерируются локально)
+infra/ssl/*.pem
+infra/ssl/*.key
+infra/ssl/*.csr
+infra/ssl/*.srl
+infra/ssl/*.ext
+infra/ssl/.traefik-domains.txt
+infra/ssl/.traefik-domains.sha256
+
+# Созданные проекты (данные пользователя)
+projects/
+
+# Логи и данные
+logs/
+shared-volumes/
+infra/state/*
+!infra/state/.gitkeep
+
+# Системные и временные файлы
+*.log
+.DS_Store
+._*
+.worktrees/
+*.backup
+
+# Зависимости
+node_modules/
+vendor/
+
+# IDE / редакторы
+.vscode/
+.idea/
+*.iml
+
+# Added by Spec Kitty CLI (auto-managed)
+.claude/
+.codex/
+.opencode/
+.windsurf/
+.gemini/
+.cursor/
+.qwen/
+.kilocode/
+.augment/
+.roo/
+.amazonq/
+.github/copilot/
+.claudeignore
+kitty-specs/
+.kittify/
+
+# Локальный onboarding-контекст для ИИ-агентов
+LOCAL_AI_CONTEXT.md
+AGENTS.md

@@ -1,0 +1,40 @@
+ARG PHP_VERSION=8.4
+FROM php:${PHP_VERSION}-fpm-alpine
+
+# Установка зависимостей
+RUN apk add --no-cache \
+    git \
+    curl \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    freetype-dev \
+    oniguruma-dev \
+    libzip-dev \
+    postgresql-dev \
+    icu-dev \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        pdo_pgsql \
+        zip \
+        mbstring \
+        opcache \
+        intl \
+        bcmath
+
+# Установка Xdebug
+RUN pecl install xdebug \
+    && docker-php-ext-enable xdebug
+
+# Установка Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# Конфигурация PHP
+COPY php.ini /usr/local/etc/php/conf.d/custom.ini
+COPY xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
+
+# Рабочая директория
+WORKDIR /opt/www
+
+# Права доступа
+RUN chown -R www-data:www-data /opt/www

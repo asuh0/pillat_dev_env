@@ -1,0 +1,10 @@
+{
+  "name": "Empty",
+  "slug": "empty",
+  "version": "1.0.0",
+  "description": "Minimal empty preset without framework-specific bootstrap.",
+  "entrypoint": {
+    "install": "install.sh"
+  },
+  "templates": []
+}

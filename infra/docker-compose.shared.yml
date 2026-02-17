@@ -1,0 +1,164 @@
+networks:
+  infra_proxy:
+    name: infra_proxy
+    external: true
+
+volumes:
+  redis_data:
+    # Именованный том (без bind) — избегает ошибок прав на shared-volumes
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/../shared-volumes/grafana-data
+  loki_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/../shared-volumes/loki-data
+
+services:
+  traefik:
+    image: traefik:v2.11
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"   # HTTP (80 занят — используем 8081)
+      - "443:443"  # HTTPS при включении SSL
+      - "8080:8081" # Dashboard (порт 8081 внутри контейнера)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../logs/traefik:/logs
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./ssl:/ssl:ro
+    networks:
+      - infra_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.dev`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.entrypoints=dashboard"
+      - "traefik.http.routers.traefik-secure.rule=Host(`traefik.dev`)"
+      - "traefik.http.routers.traefik-secure.service=api@internal"
+      - "traefik.http.routers.traefik-secure.entrypoints=websecure"
+      - "traefik.http.routers.traefik-secure.tls=true"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    restart: unless-stopped
+    networks:
+      - infra_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer.rule=Host(`adminer.dev`)"
+      - "traefik.http.routers.adminer.entrypoints=web"
+      - "traefik.http.routers.adminer-secure.rule=Host(`adminer.dev`)"
+      - "traefik.http.routers.adminer-secure.entrypoints=websecure"
+      - "traefik.http.routers.adminer-secure.tls=true"
+      - "traefik.http.services.adminer.loadbalancer.server.port=8080"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - infra_proxy
+    command: redis-server --save 60 1 ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    volumes:
+      - loki_data:/loki
+      - ./loki-config.yml:/etc/loki/local-config.yaml:ro
+      - ../logs:/logs:ro
+    networks:
+      - infra_proxy
+    command: -config.file=/etc/loki/local-config.yaml
+    labels:
+      - "traefik.enable=false"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    restart: unless-stopped
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - ../logs:/logs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - infra_proxy
+    command: -config.file=/etc/promtail/config.yml
+    labels:
+      - "traefik.enable=false"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - infra_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.dev`)"
+      - "traefik.http.routers.grafana.entrypoints=web"
+      - "traefik.http.routers.grafana-secure.rule=Host(`grafana.dev`)"
+      - "traefik.http.routers.grafana-secure.entrypoints=websecure"
+      - "traefik.http.routers.grafana-secure.tls=true"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - TZ=${TZ:-Europe/Moscow}
+
+  devpanel:
+    build:
+      context: ..
+      dockerfile: infra/devpanel/Dockerfile
+    image: devpanel:latest
+    container_name: devpanel
+    restart: unless-stopped
+    user: "0:0"  # Запускаем от root для доступа к docker.sock
+    volumes:
+      - ./devpanel/src:/var/www/html:ro
+      - ../projects:/projects
+      - ./state:/state
+      - ./scripts:/scripts:ro
+      - ./templates:/templates:ro
+      - ../presets:/presets:ro
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    networks:
+      - infra_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.devpanel.rule=Host(`docker.dev`)"
+      - "traefik.http.routers.devpanel.entrypoints=web"
+      - "traefik.http.routers.devpanel-secure.rule=Host(`docker.dev`)"
+      - "traefik.http.routers.devpanel-secure.entrypoints=websecure"
+      - "traefik.http.routers.devpanel-secure.tls=true"
+      - "traefik.http.services.devpanel.loadbalancer.server.port=80"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+    entrypoint: ["/bin/bash", "-c", "/usr/local/bin/fix-docker-sock.sh && docker-php-entrypoint apache2-foreground"]

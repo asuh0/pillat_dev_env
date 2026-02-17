@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="560" viewBox="0 0 1080 560" role="img" aria-label="Repository layout diagram">
+  <defs>
+    <style>
+      .title { font: 700 24px Arial, sans-serif; fill: #1f2937; }
+      .subtitle { font: 400 14px Arial, sans-serif; fill: #4b5563; }
+      .box-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .text { font: 400 13px Arial, sans-serif; fill: #1f2937; }
+      .stroke { stroke: #cbd5e1; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1080" height="560" fill="#f8fafc"/>
+  <text x="36" y="48" class="title">Docker Env Asuho  F5;520O AB@C:BC@0 @5?>78B>@8O</text>
+  <text x="36" y="74" class="subtitle">>=D838 8 runtime-state 2K=5A5=K 87 projects/; README  548=0O B>G:0 2E>40.</text>
+
+  <rect x="36" y="106" width="320" height="188" rx="12" fill="#e0f2fe" class="stroke"/>
+  <text x="56" y="136" class="box-title">infra/</text>
+  <text x="56" y="160" class="text">- docker-compose.shared.yml</text>
+  <text x="56" y="180" class="text">- scripts/ (hostctl, create-project)</text>
+  <text x="56" y="200" class="text">- templates/php/Dockerfile.php*</text>
+  <text x="56" y="220" class="text">- devpanel/ (web UI)</text>
+  <text x="56" y="240" class="text">- state/ (registry, jobs, action logs)</text>
+  <text x="56" y="260" class="text">- ssl/, grafana/, traefik config</text>
+
+  <rect x="390" y="106" width="320" height="188" rx="12" fill="#dcfce7" class="stroke"/>
+  <text x="410" y="136" class="box-title">projects/</text>
+  <text x="410" y="160" class="text">- B>;L:> :0B0;>38 E>AB>2</text>
+  <text x="410" y="180" class="text">- :064K9 E>AB: docker-compose.yml</text>
+  <text x="410" y="200" class="text">- src/, nginx/, .env(.example)</text>
+  <text x="410" y="220" class="text">- ;>:0;L=K5 Dockerfile.php* ?@>5:B0</text>
+  <text x="410" y="240" class="text">- 157 A;C651=KE registry/log D09;>2</text>
+
+  <rect x="744" y="106" width="300" height="188" rx="12" fill="#fef3c7" class="stroke"/>
+  <text x="764" y="136" class="box-title">logs/ + shared-volumes/</text>
+  <text x="764" y="160" class="text">- F5=B@0;87>20==K5 runtime-;>38</text>
+  <text x="764" y="180" class="text">- php/nginx/db/traefik</text>
+  <text x="764" y="200" class="text">- 40==K5 A5@28A>2 infra</text>
+  <text x="764" y="220" class="text">- =5 :><<8BOBAO 2 git</text>
+
+  <rect x="36" y="326" width="480" height="188" rx="12" fill="#ede9fe" class="stroke"/>
+  <text x="56" y="356" class="box-title">>:C<5=B0F8O</text>
+  <text x="56" y="380" class="text">- README.md: >A=>2=>9 3094 (AB@C:BC@0, 70?CA:, :><0=4K)</text>
+  <text x="56" y="400" class="text">- CONTRIBUTING.md: ?@028;0 2:;040</text>
+  <text x="56" y="420" class="text">- LICENSE: ;8F5=78O</text>
+  <text x="56" y="440" class="text">- kitty-specs/: A?5F8D8:0F88 8 0@B5D0:BK D8G</text>
+
+  <rect x="550" y="326" width="494" height="188" rx="12" fill="#fee2e2" class="stroke"/>
+  <text x="570" y="356" class="box-title">?5@0F8>==K9 ?>B>:</text>
+  <text x="570" y="380" class="text">1) hostctl/devpanel A>740NB 8 C?@02;ONB E>AB0<8</text>
+  <text x="570" y="400" class="text">2) A>AB>O=85 ?8H5BAO 2 infra/state/</text>
+  <text x="570" y="420" class="text">3) ;>38 ?8HCBAO 2 logs/ 8 <>3CB @52LN8BLAO G5@57:</text>
+  <text x="570" y="440" class="text">   ./infra/scripts/hostctl.sh logs-review</text>
+  <text x="570" y="460" class="text">4) @5H5=8O keep/delete D8:A8@CNBAO >BG5B>< 2 infra/state/</text>
+</svg>

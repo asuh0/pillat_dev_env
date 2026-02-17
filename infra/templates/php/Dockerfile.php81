@@ -1,0 +1,46 @@
+ARG PHP_VERSION=8.1
+FROM php:${PHP_VERSION}-fpm-alpine
+
+# Установка зависимостей
+RUN apk add --no-cache \
+    git \
+    curl \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    freetype-dev \
+    oniguruma-dev \
+    libzip-dev \
+    mysql-client \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        mysqli \
+        pdo_mysql \
+        zip \
+        mbstring \
+        opcache
+
+# Установка Xdebug (совместимый вариант для разных версий PHP)
+RUN set -eux; \
+    if ! pecl install xdebug; then \
+        case "${PHP_VERSION}" in \
+            7.4) pecl install xdebug-3.1.6 ;; \
+            8.0|8.1) pecl install xdebug-3.3.2 ;; \
+            8.2|8.3|8.4) pecl install xdebug-3.4.2 ;; \
+            *) pecl install xdebug ;; \
+        esac; \
+    fi; \
+    docker-php-ext-enable xdebug
+
+# Установка Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# Конфигурация PHP
+COPY php.ini /usr/local/etc/php/conf.d/custom.ini
+COPY xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
+
+# Рабочая директория
+WORKDIR /opt/www
+
+# Права доступа
+RUN chown -R www-data:www-data /opt/www
