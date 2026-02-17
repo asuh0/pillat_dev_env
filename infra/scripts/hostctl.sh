@@ -209,6 +209,17 @@ set_infra_runtime_mode() {
 }
 
 get_infra_runtime_mode() {
+    if command -v docker >/dev/null 2>&1; then
+        if docker ps --format '{{.Names}}' | awk '$1=="devpanel-fallback"{found=1} END{exit !found}'; then
+            echo "fallback"
+            return 0
+        fi
+        if docker ps --format '{{.Names}}' | awk '$1=="devpanel"{found=1} END{exit !found}'; then
+            echo "primary"
+            return 0
+        fi
+    fi
+
     [ -f "$INFRA_RUNTIME_MODE_FILE" ] || { echo ""; return 0; }
     awk 'NR==1 {print; exit}' "$INFRA_RUNTIME_MODE_FILE" 2>/dev/null || true
 }
@@ -497,6 +508,40 @@ resolve_host_projects_dir() {
 
     HOST_PROJECTS_DIR_CACHE="$resolved"
     echo "$resolved"
+}
+
+running_inside_devpanel_runtime() {
+    [ -n "${DEVPANEL_FALLBACK_MODE:-}" ] && return 0
+    [ "$SCRIPT_DIR" = "/scripts" ] && return 0
+    return 1
+}
+
+fallback_runtime_container_running() {
+    command -v docker >/dev/null 2>&1 || return 1
+    docker ps --format '{{.Names}}' | awk '$1=="devpanel-fallback"{found=1} END{exit !found}'
+}
+
+maybe_delegate_to_fallback_runtime() {
+    local cmd="$1"
+    shift || true
+
+    case "$cmd" in
+        infra-start|infra-stop|infra-restart|help|-h|--help)
+            return 2
+            ;;
+    esac
+
+    if running_inside_devpanel_runtime; then
+        return 2
+    fi
+
+    if ! fallback_runtime_container_running; then
+        return 2
+    fi
+
+    echo "ℹ️  Активен fallback-режим: команда '$cmd' выполняется в контейнере devpanel-fallback."
+    docker exec -u www-data devpanel-fallback /scripts/hostctl.sh "$cmd" "$@"
+    return $?
 }
 
 set_compose_db_external_port() {
@@ -3419,6 +3464,17 @@ main() {
 
     local command="$1"
     shift
+
+    local delegated_rc=2
+    if maybe_delegate_to_fallback_runtime "$command" "$@"; then
+        delegated_rc=0
+    else
+        delegated_rc=$?
+    fi
+    if [ "$delegated_rc" -ne 2 ]; then
+        exit "$delegated_rc"
+    fi
+
     HOSTCTL_CURRENT_COMMAND="$command"
     HOSTCTL_CURRENT_ARGS="$*"
     log_event "INFO" "invoke"
