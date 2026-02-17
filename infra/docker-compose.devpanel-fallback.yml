@@ -9,6 +9,8 @@ volumes:
   loki_data_fallback:
   devpanel_projects:
   devpanel_state:
+  traefik_tls_fallback:
+    name: infra_traefik_tls_fallback
 
 services:
   traefik:
@@ -19,6 +21,8 @@ services:
       - --api.dashboard=true
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      - --providers.file.filename=/tls/dynamic.yml
+      - --providers.file.watch=true
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
       - --entrypoints.dashboard.address=:8081
@@ -30,6 +34,7 @@ services:
       - "8080:8081"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_tls_fallback:/tls:ro
     networks:
       - infra_proxy
     labels:

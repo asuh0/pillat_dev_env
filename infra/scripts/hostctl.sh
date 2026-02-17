@@ -32,6 +32,7 @@ BITRIX_BINDINGS_LOCK_DIR="$STATE_DIR/bitrix-bindings.lock"
 INFRA_COMPOSE_FILE="$INFRA_DIR/docker-compose.shared.yml"
 INFRA_DEVPANEL_FALLBACK_COMPOSE_FILE="$INFRA_DIR/docker-compose.devpanel-fallback.yml"
 INFRA_DEVPANEL_FALLBACK_SERVICE="devpanel_fallback"
+INFRA_DEVPANEL_FALLBACK_TLS_VOLUME="infra_traefik_tls_fallback"
 INFRA_ENV_FILE="$INFRA_DIR/.env.global"
 INFRA_RUNTIME_MODE_FILE="$STATE_DIR/infra-runtime-mode"
 HOSTCTL_LOG_FILE="$STATE_DIR/hostctl.log"
@@ -1262,27 +1263,27 @@ ensure_infra_network() {
 }
 
 ensure_infra_ssl() {
-    if [ ! -x "$GENERATE_SSL_SCRIPT" ]; then
+    if [ ! -f "$GENERATE_SSL_SCRIPT" ]; then
         if [ -f "$INFRA_DIR/ssl/traefik-cert.pem" ] && [ -f "$INFRA_DIR/ssl/traefik-key.pem" ]; then
             return 0
         fi
-        echo "Error: SSL helper script not found or not executable: $GENERATE_SSL_SCRIPT"
+        echo "Error: SSL helper script not found: $GENERATE_SSL_SCRIPT"
         return 1
     fi
 
-    if ! "$GENERATE_SSL_SCRIPT" >/dev/null; then
+    if ! bash "$GENERATE_SSL_SCRIPT" --skip-trust >/dev/null; then
         echo "Error: failed to prepare SSL certificates for Traefik."
         return 1
     fi
 }
 
 refresh_infra_tls_material() {
-    if [ ! -x "$GENERATE_SSL_SCRIPT" ]; then
+    if [ ! -f "$GENERATE_SSL_SCRIPT" ]; then
         return 0
     fi
 
     # Non-fatal refresh: host operation already succeeded, TLS refresh is best-effort.
-    if ! "$GENERATE_SSL_SCRIPT" --skip-trust >/dev/null 2>&1; then
+    if ! bash "$GENERATE_SSL_SCRIPT" --skip-trust >/dev/null 2>&1; then
         echo "Warning: failed to refresh SSL certificates after host registry change."
         return 0
     fi
@@ -1719,6 +1720,56 @@ prepare_infra_build_context() {
     fi
 }
 
+prepare_fallback_tls_assets() {
+    local cert_src="$INFRA_DIR/ssl/traefik-cert.pem"
+    local key_src="$INFRA_DIR/ssl/traefik-key.pem"
+    local dynamic_tmp=""
+    local helper_container=""
+    local copy_failed=0
+
+    if [ ! -f "$cert_src" ] || [ ! -f "$key_src" ]; then
+        echo "Error: fallback TLS assets are missing ($cert_src, $key_src)." >&2
+        return 1
+    fi
+
+    dynamic_tmp="$(mktemp "${TMPDIR:-/tmp}/traefik-fallback-dynamic.XXXXXX.yml")"
+    cat > "$dynamic_tmp" <<'EOF'
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /tls/traefik-cert.pem
+        keyFile: /tls/traefik-key.pem
+
+  options:
+    default:
+      minVersion: "VersionTLS12"
+      maxVersion: "VersionTLS13"
+EOF
+
+    docker volume create "$INFRA_DEVPANEL_FALLBACK_TLS_VOLUME" >/dev/null 2>&1 || true
+    helper_container="$(docker create -v "$INFRA_DEVPANEL_FALLBACK_TLS_VOLUME:/tls" traefik:v2.11 sh -c 'sleep 300' 2>/dev/null || true)"
+    if [ -z "$helper_container" ]; then
+        rm -f "$dynamic_tmp" >/dev/null 2>&1 || true
+        echo "Error: failed to create helper container for fallback TLS volume." >&2
+        return 1
+    fi
+
+    docker cp "$cert_src" "$helper_container:/tls/traefik-cert.pem" >/dev/null 2>&1 || copy_failed=1
+    docker cp "$key_src" "$helper_container:/tls/traefik-key.pem" >/dev/null 2>&1 || copy_failed=1
+    docker cp "$dynamic_tmp" "$helper_container:/tls/dynamic.yml" >/dev/null 2>&1 || copy_failed=1
+
+    docker rm -f "$helper_container" >/dev/null 2>&1 || true
+    rm -f "$dynamic_tmp" >/dev/null 2>&1 || true
+
+    if [ "$copy_failed" -ne 0 ]; then
+        echo "Error: failed to copy TLS assets into fallback volume '$INFRA_DEVPANEL_FALLBACK_TLS_VOLUME'." >&2
+        return 1
+    fi
+
+    return 0
+}
+
 infra_mount_bind_failure_detected() {
     local output="$1"
     if [[ "$output" == *"error while creating mount source path"* ]]; then
@@ -1756,6 +1807,11 @@ runtime_infra_up() {
     if [ -f "$INFRA_DEVPANEL_FALLBACK_COMPOSE_FILE" ] && infra_mount_bind_failure_detected "$output"; then
         echo "   ⚠️  Обнаружена ошибка bind-mount. Пробуем fallback-режим инфраструктуры..."
         echo "      (полный стек без bind-монтов: traefik/adminer/redis/loki/promtail/grafana/devpanel)"
+
+        if ! prepare_fallback_tls_assets; then
+            echo "   ❌ Не удалось подготовить TLS-сертификаты для fallback-режима."
+            return 1
+        fi
 
         local fallback_output=""
         if fallback_output="$(runtime_infra_compose_fallback up -d --yes --build 2>&1)"; then
