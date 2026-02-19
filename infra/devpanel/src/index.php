@@ -1334,7 +1334,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DevPanel - Управление Docker проектами</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.0/dist/css/coreui.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         :root {
@@ -1354,11 +1354,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             margin-bottom: 2rem;
         }
         .resource-card {
-            background: white;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 1rem;
-            box-shadow: var(--card-shadow);
             transition: transform 0.2s, box-shadow 0.2s;
         }
         .resource-card:hover {
@@ -1366,11 +1361,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             box-shadow: var(--card-hover-shadow);
         }
         .project-card {
-            background: white;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: var(--card-shadow);
             transition: transform 0.2s, box-shadow 0.2s;
         }
         .project-card:hover {
@@ -1435,39 +1425,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 <h3 class="mb-3"><i class="bi bi-server"></i> Ресурсы инфраструктуры</h3>
                 <div class="row">
                     <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="resource-card">
-                            <h5><i class="bi bi-speedometer2 text-primary"></i> Traefik Dashboard</h5>
-                            <p class="text-muted small mb-2">Мониторинг роутинга</p>
-                            <a href="https://<?= htmlspecialchars($serviceDomains['traefik']) ?>/dashboard/" target="_blank" class="btn btn-sm btn-primary w-100">
-                                <i class="bi bi-box-arrow-up-right"></i> Открыть
-                            </a>
+                        <div class="card resource-card h-100">
+                            <div class="card-body">
+                                <h5 class="card-title"><i class="bi bi-speedometer2 text-primary"></i> Traefik Dashboard</h5>
+                                <p class="text-muted small mb-2">Мониторинг роутинга</p>
+                                <a href="https://<?= htmlspecialchars($serviceDomains['traefik']) ?>/dashboard/" target="_blank" class="btn btn-sm btn-primary w-100">
+                                    <i class="bi bi-box-arrow-up-right"></i> Открыть
+                                </a>
+                            </div>
                         </div>
                     </div>
                     <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="resource-card">
-                            <h5><i class="bi bi-database text-success"></i> Adminer</h5>
+                        <div class="card resource-card h-100">
+                            <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-database text-success"></i> Adminer</h5>
                             <p class="text-muted small mb-2">Управление БД</p>
                             <a href="https://<?= htmlspecialchars($serviceDomains['adminer']) ?>" target="_blank" class="btn btn-sm btn-success w-100">
                                 <i class="bi bi-box-arrow-up-right"></i> Открыть
                             </a>
+                            </div>
                         </div>
                     </div>
                     <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="resource-card">
-                            <h5><i class="bi bi-graph-up text-info"></i> Grafana</h5>
+                        <div class="card resource-card h-100">
+                            <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-graph-up text-info"></i> Grafana</h5>
                             <p class="text-muted small mb-2">Логи и метрики</p>
                             <a href="https://<?= htmlspecialchars($serviceDomains['grafana']) ?>" target="_blank" class="btn btn-sm btn-info w-100">
                                 <i class="bi bi-box-arrow-up-right"></i> Открыть
                             </a>
+                            </div>
                         </div>
                     </div>
                     <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="resource-card">
-                            <h5><i class="bi bi-boxes text-warning"></i> DevPanel</h5>
+                        <div class="card resource-card h-100">
+                            <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-boxes text-warning"></i> DevPanel</h5>
                             <p class="text-muted small mb-2">Эта панель</p>
                             <a href="https://<?= htmlspecialchars($serviceDomains['docker']) ?>" class="btn btn-sm btn-warning w-100">
                                 <i class="bi bi-arrow-clockwise"></i> Обновить
                             </a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1635,7 +1633,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             $deleteBlocked = count($linkedHosts) > 0;
                         }
                     ?>
-                        <div class="project-card">
+                        <div class="card project-card mb-3">
+                            <div class="card-body">
                             <div class="d-flex justify-content-between align-items-start mb-3">
                                 <div>
                                     <h4 class="mb-1">
@@ -1825,6 +1824,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     Удаление недоступно: сначала удалите link-хосты, привязанные к core `<?= htmlspecialchars($metadata['core_id']) ?>`.
                                 </div>
                             <?php endif; ?>
+                            </div>
                         </div>
 
                         <!-- Modal для удаления -->
@@ -1866,7 +1866,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.0/dist/js/coreui.bundle.min.js"></script>
     <script>
         function copyHostsConfig() {
             const config = document.getElementById('hostsConfig').textContent;
