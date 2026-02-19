@@ -46,6 +46,8 @@ bash ./infra/scripts/bootstrap.sh
 cp ./infra/.env.global.example ./infra/.env.global
 ```
 
+Укажите `DOMAIN_SUFFIX` в `infra/.env.global` (например, `pillat` или `loc`). Все домены будут в этой зоне: `docker.<zone>`, `traefik.<zone>`, `<project>.<zone>`.
+
 2) Сгенерируйте SSL для локальной среды:
 
 ```bash
@@ -60,19 +62,22 @@ bash ./infra/scripts/start-all.sh
 
 Скрипт использует `hostctl.sh infra-start` и автоматически включает fallback-режим при проблемах bind-mount (например, на внешнем диске).
 
-4) Добавьте базовые домены в `/etc/hosts`:
+4) Добавьте базовые домены в `/etc/hosts`. Используйте вашу активную зону (`DOMAIN_SUFFIX` из `.env.global`, по умолчанию `loc`):
 
 ```text
-127.0.0.1 docker.dev
-127.0.0.1 traefik.dev
-127.0.0.1 adminer.dev
-127.0.0.1 grafana.dev
+127.0.0.1 docker.loc
+127.0.0.1 traefik.loc
+127.0.0.1 adminer.loc
+127.0.0.1 grafana.loc
 ```
+
+Актуальный список доменов см. в DevPanel (блок «Конфигурация /etc/hosts»).
 
 5) Проверьте доступность DevPanel:
 
 ```bash
-curl -k --resolve docker.dev:443:127.0.0.1 https://docker.dev
+# Замените loc на ваш DOMAIN_SUFFIX
+curl -k --resolve docker.loc:443:127.0.0.1 https://docker.loc
 ```
 
 ## Проверка на свежем clone
@@ -119,11 +124,11 @@ cd infra/scripts
 bash ./hostctl.sh infra-start
 bash ./hostctl.sh infra-stop
 bash ./hostctl.sh infra-restart
-bash ./hostctl.sh create demo.dev --php 8.2 --db mysql --preset empty
+bash ./hostctl.sh create demo --php 8.2 --db mysql --preset empty
 bash ./hostctl.sh status
-bash ./hostctl.sh stop demo.dev
-bash ./hostctl.sh start demo.dev
-bash ./hostctl.sh delete demo.dev --yes
+bash ./hostctl.sh stop demo.<zone>
+bash ./hostctl.sh start demo.<zone>
+bash ./hostctl.sh delete demo.<zone> --yes
 ```
 
 `infra-start` автоматически переключается на fallback-compose, если Docker Desktop не может создать bind-mount на внешнем диске. В этом режиме DevPanel доступен также по `http://localhost:8088`.
@@ -138,7 +143,7 @@ bash ./hostctl.sh logs --tail 200
 
 ### Через DevPanel
 
-- URL: `https://docker.dev`
+- URL: `https://docker.<zone>` (где `<zone>` — ваш DOMAIN_SUFFIX, напр. `loc`)
 - Возможности:
   - создание хоста (preset/php/db/bitrix-mode),
   - start/stop/restart/delete,
@@ -177,6 +182,10 @@ bash ./hostctl.sh logs-review
 - `bitrix`
 
 Контракт пресетов: `presets/CONTRACT.md`.
+
+## Смена доменной зоны (DOMAIN_SUFFIX)
+
+Смена `DOMAIN_SUFFIX` допустима только при **пустом registry** (без хостов). Пошаговая процедура: `infra/docs/DOMAIN_SUFFIX-MIGRATION.md`.
 
 ## Карта документации
 

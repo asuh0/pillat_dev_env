@@ -9,7 +9,11 @@
 
 set -e
 
-HOSTS_FILE="/etc/hosts"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INFRA_DIR="$(dirname "$SCRIPT_DIR")"
+DOMAIN_ZONE_HELPER="$SCRIPT_DIR/domain-zone.sh"
+
+HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 MARKER_START="# Docker DevPanel Projects - START"
 MARKER_END="# Docker DevPanel Projects - END"
 IP="127.0.0.1"
@@ -21,6 +25,31 @@ fi
 
 ACTION="$1"
 DOMAIN="$2"
+
+if [ -f "$DOMAIN_ZONE_HELPER" ]; then
+    # shellcheck source=/dev/null
+    source "$DOMAIN_ZONE_HELPER"
+fi
+
+canonicalize_domain_for_action() {
+    local action="$1"
+    local input="$2"
+    local suffix=""
+    local mode="existing"
+    local canonical=""
+
+    command -v dz_resolve_domain_suffix >/dev/null 2>&1 || { echo "$input"; return 0; }
+    command -v dz_canonicalize_host >/dev/null 2>&1 || { echo "$input"; return 0; }
+
+    suffix="$(dz_resolve_domain_suffix "${DOMAIN_SUFFIX:-}" "$INFRA_DIR/.env.global" "$INFRA_DIR/.env.global.example" "loc")" || return 1
+
+    if [ "$action" = "add" ]; then
+        mode="create"
+    fi
+
+    canonical="$(dz_canonicalize_host "$input" "$suffix" "$mode")" || return 1
+    echo "$canonical"
+}
 
 # Функция для проверки наличия маркеров
 has_markers() {
@@ -50,6 +79,11 @@ case "$ACTION" in
     add)
         if [ -z "$DOMAIN" ]; then
             echo "❌ Укажите домен для добавления"
+            exit 1
+        fi
+
+        if ! DOMAIN="$(canonicalize_domain_for_action "add" "$DOMAIN")"; then
+            echo "❌ Некорректный домен '$2' для активной зоны DOMAIN_SUFFIX."
             exit 1
         fi
         
@@ -110,6 +144,11 @@ $ENTRY
             echo "❌ Укажите домен для удаления"
             exit 1
         fi
+
+        if ! DOMAIN="$(canonicalize_domain_for_action "remove" "$DOMAIN")"; then
+            echo "❌ Некорректный домен '$2' для удаления."
+            exit 1
+        fi
         
         # Проверяем права доступа
         if [ ! -w "$HOSTS_FILE" ]; then
@@ -151,6 +190,11 @@ $ENTRY
     check)
         if [ -z "$DOMAIN" ]; then
             echo "❌ Укажите домен для проверки"
+            exit 1
+        fi
+
+        if ! DOMAIN="$(canonicalize_domain_for_action "check" "$DOMAIN")"; then
+            echo "❌ Некорректный домен '$2' для проверки."
             exit 1
         fi
         

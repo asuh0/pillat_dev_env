@@ -1,7 +1,7 @@
 <?php
 /**
  * DevPanel - Интерфейс управления Docker проектами
- * Доступ: https://docker.dev
+ * Доступ: https://docker.<DOMAIN_SUFFIX> (см. infra/.env.global)
  */
 
 header('Content-Type: text/html; charset=utf-8');
@@ -196,6 +196,66 @@ if ($projectsDir && is_dir($projectsDir)) {
 }
 $hostctlScript = '/scripts/hostctl.sh';
 
+// === Active zone (DOMAIN_SUFFIX) helpers for WP04 ===
+function devpanel_resolve_domain_suffix() {
+    $raw = getenv('DOMAIN_SUFFIX');
+    if ($raw === false || $raw === '') {
+        $raw = 'loc';
+    }
+    $suffix = strtolower(trim(preg_replace('/^[\s"\']+|[\s"\']+$/u', '', $raw)));
+    if ($suffix === '') {
+        return ['suffix' => null, 'error' => 'DOMAIN_SUFFIX не задан. Настройте в infra/.env.global.'];
+    }
+    if (!preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/', $suffix) || strlen($suffix) > 63) {
+        return ['suffix' => null, 'error' => "Некорректный DOMAIN_SUFFIX '$suffix'. Ожидается DNS-метка до 63 символов."];
+    }
+    return ['suffix' => $suffix, 'error' => null];
+}
+
+function devpanel_service_domains($suffix) {
+    return [
+        'docker' => 'docker.' . $suffix,
+        'traefik' => 'traefik.' . $suffix,
+        'adminer' => 'adminer.' . $suffix,
+        'grafana' => 'grafana.' . $suffix,
+    ];
+}
+
+function devpanel_is_legacy_host($host, $suffix) {
+    if ($suffix === '' || $suffix === null) return false;
+    if (preg_match('/\.([a-z0-9][a-z0-9-]{0,30})$/i', $host, $m)) {
+        return strtolower($m[1]) !== strtolower($suffix);
+    }
+    return true;
+}
+
+function devpanel_canonicalize_host($input, $suffix, $mode = 'existing') {
+    $normalized = strtolower(trim(preg_replace('/^[\s"\']+|[\s"\']+$/u', '', $input)));
+    if ($normalized === '') {
+        return ['canonical' => null, 'error' => 'Пустое имя хоста.'];
+    }
+    if (preg_match('/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i', $normalized) && strlen($normalized) <= 63) {
+        return ['canonical' => $normalized . '.' . $suffix, 'error' => null];
+    }
+    if (preg_match('/^([a-z0-9][a-z0-9-]{0,62})\.([a-z0-9][a-z0-9-]{0,30})$/i', $normalized, $m)) {
+        $hostLabel = $m[1];
+        $hostSuffix = strtolower($m[2]);
+        if ($hostSuffix === $suffix) {
+            return ['canonical' => $hostLabel . '.' . $suffix, 'error' => null];
+        }
+        if ($mode === 'create') {
+            return ['canonical' => null, 'error' => "Хост '$input' использует суффикс '$hostSuffix'. Разрешена только активная зона '$suffix'."];
+        }
+        return ['canonical' => $hostLabel . '.' . $hostSuffix, 'error' => null];
+    }
+    return ['canonical' => null, 'error' => "Некорректное имя хоста '$input'. Допустимо: <name> или <name>.$suffix"];
+}
+
+$domainZone = devpanel_resolve_domain_suffix();
+$domainSuffix = $domainZone['suffix'] ?? 'loc';
+$domainZoneError = $domainZone['error'] ?? null;
+$serviceDomains = $domainSuffix ? devpanel_service_domains($domainSuffix) : ['docker' => 'docker.loc', 'traefik' => 'traefik.loc', 'adminer' => 'adminer.loc', 'grafana' => 'grafana.loc'];
+
 // Парсинг .env / .env.example: все пары KEY=VALUE в массив
 function parseEnvFile($projectPath) {
     $env = [];
@@ -333,6 +393,13 @@ function detectCreateErrorKind($outputText) {
 
     if (strpos($normalized, 'already exists') !== false || strpos($normalized, 'уже существует') !== false) {
         return 'conflict';
+    }
+    if (strpos($normalized, 'foreign_suffix') !== false || strpos($normalized, 'foreign suffix') !== false
+        || strpos($normalized, 'использует суффикс') !== false || strpos($normalized, 'invalid_domain_suffix') !== false) {
+        return 'foreign_suffix';
+    }
+    if (strpos($normalized, 'invalid_host') !== false || strpos($normalized, 'invalid host') !== false) {
+        return 'invalid_host';
     }
 
     if (
@@ -626,13 +693,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     
     switch ($action) {
         case 'create':
-            $projectName = trim($_POST['project_name'] ?? '');
+            $projectNameRaw = trim($_POST['project_name'] ?? '');
             $phpVersion = $_POST['php_version'] ?? '8.2';
             $dbType = $_POST['db_type'] ?? 'mysql';
             $preset = $_POST['preset'] ?? 'php';
             $bitrixType = trim($_POST['bitrix_type'] ?? 'kernel');
             $coreId = trim($_POST['core_id'] ?? '');
-            
+
+            if ($domainZoneError !== null) {
+                $actionResult = ['type' => 'error', 'message' => $domainZoneError];
+                break;
+            }
+            $canon = devpanel_canonicalize_host($projectNameRaw, $domainSuffix, 'create');
+            if ($canon['error'] !== null) {
+                $actionResult = ['type' => 'error', 'message' => $canon['error']];
+                break;
+            }
+            $projectName = $canon['canonical'];
+
             if (!empty($projectName) && preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
                 if (file_exists($hostctlScript)) {
                     $cmdParts = [
@@ -1018,6 +1096,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $type = $exitCode === 0 ? 'success' : 'error';
                 $meta = json_decode((string)@file_get_contents($jobMetaFile), true);
                 $projectName = is_array($meta) ? trim((string)($meta['project'] ?? '')) : '';
+                $errorKind = 'generic';
                 if ($exitCode === 0) {
                     $message = 'Проект создан успешно';
                 } else {
@@ -1027,6 +1106,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $message = $projectName !== ''
                             ? "Хост {$projectName} уже существует. Укажите другое имя или удалите существующий хост."
                             : 'Хост с таким именем уже существует. Укажите другое имя или удалите существующий хост.';
+                    } elseif ($errorKind === 'foreign_suffix') {
+                        $message = 'Хост использует суффикс, отличный от активной зоны. Введите короткое имя или домен в формате <name>.' . $domainSuffix . ' (см. DOMAIN_SUFFIX в infra/.env.global)';
+                    } elseif ($errorKind === 'invalid_host') {
+                        $message = 'Некорректное имя хоста. Допустимо: короткое имя или полный домен в формате <name>.' . $domainSuffix;
                     } elseif ($errorKind === 'infra') {
                         $message = 'Ошибка инфраструктуры Docker при создании хоста. Проверьте доступ Docker и настройки shared paths.';
                     } else {
@@ -1206,11 +1289,10 @@ $hostsDomains = [];
 foreach ($projects as $project) {
     $hostsDomains[] = $project['name'];
 }
-// Добавляем домены инфраструктуры
-$hostsDomains[] = 'traefik.dev';
-$hostsDomains[] = 'adminer.dev';
-$hostsDomains[] = 'grafana.dev';
-$hostsDomains[] = 'docker.dev';
+// Добавляем домены инфраструктуры (активная зона)
+foreach ($serviceDomains as $svc => $domain) {
+    $hostsDomains[] = $domain;
+}
 $hostsDomains = array_unique($hostsDomains);
 sort($hostsDomains);
 
@@ -1325,6 +1407,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
     </div>
 
     <div class="container">
+        <?php if ($domainZoneError): ?>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                <i class="bi bi-exclamation-triangle"></i> <?= htmlspecialchars($domainZoneError) ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        <?php endif; ?>
         <?php if ($actionResult): ?>
             <?php
                 $alertType = (string)($actionResult['type'] ?? 'error');
@@ -1350,7 +1438,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                         <div class="resource-card">
                             <h5><i class="bi bi-speedometer2 text-primary"></i> Traefik Dashboard</h5>
                             <p class="text-muted small mb-2">Мониторинг роутинга</p>
-                            <a href="https://traefik.dev/dashboard/" target="_blank" class="btn btn-sm btn-primary w-100">
+                            <a href="https://<?= htmlspecialchars($serviceDomains['traefik']) ?>/dashboard/" target="_blank" class="btn btn-sm btn-primary w-100">
                                 <i class="bi bi-box-arrow-up-right"></i> Открыть
                             </a>
                         </div>
@@ -1359,7 +1447,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                         <div class="resource-card">
                             <h5><i class="bi bi-database text-success"></i> Adminer</h5>
                             <p class="text-muted small mb-2">Управление БД</p>
-                            <a href="https://adminer.dev" target="_blank" class="btn btn-sm btn-success w-100">
+                            <a href="https://<?= htmlspecialchars($serviceDomains['adminer']) ?>" target="_blank" class="btn btn-sm btn-success w-100">
                                 <i class="bi bi-box-arrow-up-right"></i> Открыть
                             </a>
                         </div>
@@ -1368,7 +1456,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                         <div class="resource-card">
                             <h5><i class="bi bi-graph-up text-info"></i> Grafana</h5>
                             <p class="text-muted small mb-2">Логи и метрики</p>
-                            <a href="https://grafana.dev" target="_blank" class="btn btn-sm btn-info w-100">
+                            <a href="https://<?= htmlspecialchars($serviceDomains['grafana']) ?>" target="_blank" class="btn btn-sm btn-info w-100">
                                 <i class="bi bi-box-arrow-up-right"></i> Открыть
                             </a>
                         </div>
@@ -1377,7 +1465,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                         <div class="resource-card">
                             <h5><i class="bi bi-boxes text-warning"></i> DevPanel</h5>
                             <p class="text-muted small mb-2">Эта панель</p>
-                            <a href="https://docker.dev" class="btn btn-sm btn-warning w-100">
+                            <a href="https://<?= htmlspecialchars($serviceDomains['docker']) ?>" class="btn btn-sm btn-warning w-100">
                                 <i class="bi bi-arrow-clockwise"></i> Обновить
                             </a>
                         </div>
@@ -1401,9 +1489,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     <label class="form-label" id="projectNameLabel">Имя проекта (домен)</label>
                                     <input type="text" class="form-control" name="project_name" 
                                            id="projectNameInput"
-                                           placeholder="my-project.dev" required 
+                                           placeholder="my-project.<?= htmlspecialchars($domainSuffix) ?>" required 
                                            pattern="[a-z0-9\-\.]+" 
-                                           title="Только латинские буквы, цифры, дефисы и точки">
+                                           title="Короткое имя или полный домен в зоне <?= htmlspecialchars($domainSuffix) ?>"
+                                           data-domain-suffix="<?= htmlspecialchars($domainSuffix) ?>">
                                 </div>
                                 <div class="col-md-3 mb-3">
                                     <label class="form-label">PHP версия</label>
@@ -1550,8 +1639,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             <div class="d-flex justify-content-between align-items-start mb-3">
                                 <div>
                                     <h4 class="mb-1">
-                                        <i class="bi bi-folder-fill text-primary"></i> 
+                                        <i class="bi bi-folder-fill text-primary"></i>
                                         <?= htmlspecialchars($project['name']) ?>
+                                        <?php if ($domainSuffix && devpanel_is_legacy_host($project['name'], $domainSuffix)): ?>
+                                            <span class="badge bg-secondary ms-1" title="Хост вне активной зоны (<?= htmlspecialchars($domainSuffix) ?>)">legacy</span>
+                                        <?php endif; ?>
                                     </h4>
                                     <p class="text-muted small mb-0">
                                         <i class="bi bi-server"></i> Контейнеров: <?= count($containers) ?> 
@@ -1842,11 +1934,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             // Kernel и ext_kernel - это полноценные сайты, поэтому используют домен
             // Только для других пресетов - стандартный формат домена
             if (projectNameLabel && projectNameInput) {
-                // Все типы Bitrix (kernel, ext_kernel, link) и другие пресеты используют домен
+                const suffix = projectNameInput.getAttribute('data-domain-suffix') || 'loc';
                 projectNameLabel.textContent = 'Имя проекта (домен)';
-                projectNameInput.placeholder = 'my-project.dev';
+                projectNameInput.placeholder = 'my-project.' + suffix;
                 projectNameInput.pattern = '[a-z0-9\\-\\.]+';
-                projectNameInput.title = 'Только латинские буквы, цифры, дефисы и точки';
+                projectNameInput.title = 'Короткое имя или полный домен в зоне ' + suffix;
             }
         }
 
@@ -2042,6 +2134,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     } else {
                                         if (statusResp.error_kind === 'conflict') {
                                             modalTitle.innerHTML = '<i class="bi bi-exclamation-circle text-warning"></i> Имя уже занято';
+                                            setCreateErrorAlertKind('warning');
+                                        } else if (statusResp.error_kind === 'foreign_suffix' || statusResp.error_kind === 'invalid_host') {
+                                            modalTitle.innerHTML = '<i class="bi bi-exclamation-triangle text-warning"></i> Некорректный домен';
                                             setCreateErrorAlertKind('warning');
                                         } else {
                                             modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Ошибка создания проекта';

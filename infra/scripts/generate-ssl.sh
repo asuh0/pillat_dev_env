@@ -26,13 +26,21 @@ DOMAINS_HASH_FILE="$STATE_DIR/traefik-domains.sha256"
 LEGACY_DOMAINS_FILE="$SSL_DIR/.traefik-domains.txt"
 LEGACY_DOMAINS_HASH_FILE="$SSL_DIR/.traefik-domains.sha256"
 CA_CN="Docker Env Asuho Dev CA"
+DOMAIN_ZONE_HELPER="$SCRIPT_DIR/domain-zone.sh"
 
-STATIC_DOMAINS=(
-    "docker.dev"
-    "traefik.dev"
-    "adminer.dev"
-    "grafana.dev"
-)
+# Static service domains — use DOMAIN_SUFFIX from env/conf (Feature 010)
+DOMAIN_SUFFIX_RESOLVED="loc"
+resolve_static_domains() {
+    if [ -f "$DOMAIN_ZONE_HELPER" ]; then
+        # shellcheck source=/dev/null
+        source "$DOMAIN_ZONE_HELPER"
+        DOMAIN_SUFFIX_RESOLVED="$(dz_resolve_domain_suffix "${DOMAIN_SUFFIX:-}" "$INFRA_DIR/.env.global" "$INFRA_DIR/.env.global.example" "loc")" || DOMAIN_SUFFIX_RESOLVED="loc"
+    fi
+    echo "docker.$DOMAIN_SUFFIX_RESOLVED"
+    echo "traefik.$DOMAIN_SUFFIX_RESOLVED"
+    echo "adminer.$DOMAIN_SUFFIX_RESOLVED"
+    echo "grafana.$DOMAIN_SUFFIX_RESOLVED"
+}
 
 FORCE_REGENERATE=0
 SKIP_TRUST_INSTALL=0
@@ -74,9 +82,7 @@ collect_domains() {
     local tmp_file
     tmp_file="$(mktemp)"
 
-    for domain in "${STATIC_DOMAINS[@]}"; do
-        echo "$domain" >> "$tmp_file"
-    done
+    resolve_static_domains >> "$tmp_file"
 
     if [ -f "$REGISTRY_FILE" ]; then
         awk -F'\t' 'NF > 0 && $1 != "" {print $1}' "$REGISTRY_FILE" >> "$tmp_file"
@@ -150,6 +156,14 @@ maybe_install_ca_macos() {
 }
 
 ensure_traefik_certificate() {
+    # Resolve suffix first (needed for CN)
+    if [ -f "$DOMAIN_ZONE_HELPER" ]; then
+        # shellcheck source=/dev/null
+        source "$DOMAIN_ZONE_HELPER"
+        DOMAIN_SUFFIX_RESOLVED="$(dz_resolve_domain_suffix "${DOMAIN_SUFFIX:-}" "$INFRA_DIR/.env.global" "$INFRA_DIR/.env.global.example" "loc")" || DOMAIN_SUFFIX_RESOLVED="loc"
+    else
+        DOMAIN_SUFFIX_RESOLVED="loc"
+    fi
     local domains
     domains="$(collect_domains)"
 
@@ -180,7 +194,7 @@ ensure_traefik_certificate() {
     openssl genrsa -out "$TRAEFIK_KEY" 2048
     openssl req -new -key "$TRAEFIK_KEY" \
         -out "$TRAEFIK_CSR" \
-        -subj "/C=RU/ST=Moscow/L=Moscow/O=Docker Env Asuho/CN=docker.dev"
+        -subj "/C=RU/ST=Moscow/L=Moscow/O=Docker Env Asuho/CN=docker.$DOMAIN_SUFFIX_RESOLVED"
 
     local leaf_cert="$SSL_DIR/traefik-leaf.pem"
     openssl x509 -req -in "$TRAEFIK_CSR" \

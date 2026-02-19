@@ -39,6 +39,12 @@ HOSTCTL_LOG_FILE="$STATE_DIR/hostctl.log"
 HOSTCTL_CURRENT_COMMAND=""
 HOSTCTL_CURRENT_ARGS=""
 HOST_PROJECTS_DIR_CACHE=""
+DOMAIN_ZONE_HELPER="$SCRIPT_DIR/domain-zone.sh"
+
+if [ -f "$DOMAIN_ZONE_HELPER" ]; then
+    # shellcheck source=/dev/null
+    source "$DOMAIN_ZONE_HELPER"
+fi
 
 usage() {
     cat <<'EOF'
@@ -63,17 +69,17 @@ Notes:
   status --host <host> prints only the selected host and its applications.
 
 Examples:
-  hostctl.sh create my-project.dev --php 8.2 --db mysql --preset bitrix --bitrix-type kernel --core-id core-main
-  hostctl.sh create my-link.dev --preset bitrix --bitrix-type link --core core-main
-  hostctl.sh create my-project.dev --hosts-mode skip
-  hostctl.sh create my-project.dev --interactive
-  hostctl.sh start my-project.dev
-  hostctl.sh stop my-project.dev
+  hostctl.sh create my-project --php 8.2 --db mysql --preset bitrix --bitrix-type kernel --core-id core-main
+  hostctl.sh create my-link --preset bitrix --bitrix-type link --core core-main
+  hostctl.sh create my-project --hosts-mode skip
+  hostctl.sh create my-project --interactive
+  hostctl.sh start my-project.<zone>
+  hostctl.sh stop my-project.<zone>
   hostctl.sh infra-start
   hostctl.sh infra-stop
   hostctl.sh infra-restart
-  hostctl.sh create sandbox.dev --preset empty
-  hostctl.sh delete my-project.dev --yes
+  hostctl.sh create sandbox --preset empty
+  hostctl.sh delete my-project.<zone> --yes
   hostctl.sh status
   hostctl.sh logs --tail 200
   hostctl.sh logs-review
@@ -82,6 +88,100 @@ EOF
 
 to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+normalize_token() {
+    local raw="$1"
+    printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | sed -E "s/^[[:space:]\"']+//; s/[[:space:]\"']+$//"
+}
+
+is_valid_domain_suffix() {
+    local value="$1"
+    [[ "$value" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]
+}
+
+is_valid_host_label() {
+    local value="$1"
+    [[ "$value" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]
+}
+
+resolve_domain_suffix() {
+    local raw="${DOMAIN_SUFFIX:-}"
+    local suffix=""
+    local fallback_example="$INFRA_DIR/.env.global.example"
+
+    if [ -z "$raw" ] && [ -f "$INFRA_ENV_FILE" ]; then
+        raw="$(env_get_key "$INFRA_ENV_FILE" "DOMAIN_SUFFIX")"
+    fi
+
+    if [ -z "$raw" ] && [ -f "$fallback_example" ]; then
+        raw="$(env_get_key "$fallback_example" "DOMAIN_SUFFIX")"
+    fi
+
+    suffix="$(normalize_token "$raw")"
+
+    if [ -z "$suffix" ]; then
+        fail_with_code "invalid_domain_suffix" "Не задан DOMAIN_SUFFIX. Укажите DOMAIN_SUFFIX в 'infra/.env.global' (например, 'pillat')."
+        return 1
+    fi
+
+    if ! is_valid_domain_suffix "$suffix"; then
+        fail_with_code "invalid_domain_suffix" "Некорректный DOMAIN_SUFFIX '$suffix'. Допустимо: [a-z0-9-], первый символ [a-z0-9], длина до 31."
+        return 1
+    fi
+
+    echo "$suffix"
+}
+
+canonicalize_host_name() {
+    local raw_host="$1"
+    local domain_suffix="$2"
+    local mode="${3:-existing}"
+    local normalized=""
+    local host_label=""
+    local host_suffix=""
+
+    normalized="$(normalize_token "$raw_host")"
+
+    if is_valid_host_label "$normalized"; then
+        echo "${normalized}.${domain_suffix}"
+        return 0
+    fi
+
+    if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62})\.([a-z0-9][a-z0-9-]{0,30})$ ]]; then
+        host_label="${BASH_REMATCH[1]}"
+        host_suffix="${BASH_REMATCH[2]}"
+
+        if [ "$host_suffix" = "$domain_suffix" ]; then
+            echo "${host_label}.${domain_suffix}"
+            return 0
+        fi
+
+        if [ "$mode" = "create" ]; then
+            fail_with_code "foreign_suffix" "Хост '$raw_host' использует суффикс '$host_suffix'. Активный суффикс: '$domain_suffix'. Используйте '<name>' или '<name>.$domain_suffix'."
+            return 1
+        fi
+
+        # Для уже существующих legacy-хостов допускаем явный домен с другим suffix.
+        echo "${host_label}.${host_suffix}"
+        return 0
+    fi
+
+    fail_with_code "invalid_host" "Некорректное имя хоста '$raw_host'. Допустимо: '<name>' или '<name>.$domain_suffix', где name соответствует [a-z0-9-]."
+    return 1
+}
+
+# T025: Legacy host = domain with suffix different from active zone. Informational marker only.
+is_legacy_host() {
+    local host="$1"
+    local domain_suffix="$2"
+    if [[ "$host" =~ \.([a-z0-9][a-z0-9-]{0,30})$ ]]; then
+        local host_suffix="${BASH_REMATCH[1]}"
+        [ "$host_suffix" != "$domain_suffix" ]
+        return
+    fi
+    # No dot or invalid format — treat as legacy/unknown
+    return 0
 }
 
 infra_fallback_enabled() {
@@ -1366,6 +1466,13 @@ refresh_infra_tls_material() {
         return 0
     fi
 
+    # В fallback-режиме Traefik использует volume, а не bind-mount — нужно обновить сертификаты в volume.
+    if [ "$(get_infra_runtime_mode)" = "fallback" ]; then
+        if ! prepare_fallback_tls_assets; then
+            echo "Warning: failed to update fallback TLS volume after SSL refresh."
+        fi
+    fi
+
     if docker ps --format '{{.Names}}' | awk '$1 == "traefik" {found=1} END {exit !found}'; then
         docker restart traefik >/dev/null 2>&1 || echo "Warning: failed to restart traefik after SSL refresh."
     fi
@@ -1410,15 +1517,41 @@ display_preset() {
 
 registry_has_host() {
     local host="$1"
+    local normalized_host=""
+    local domain_suffix=""
+    local canonical_host=""
     [ -f "$REGISTRY_FILE" ] || return 1
-    awk -F'\t' -v host="$host" '$1 == host {found=1} END {exit !found}' "$REGISTRY_FILE"
+
+    normalized_host="$(normalize_token "$host")"
+
+    if is_valid_host_label "$normalized_host"; then
+        if domain_suffix="$(resolve_domain_suffix 2>/dev/null)"; then
+            canonical_host="${normalized_host}.${domain_suffix}"
+            if awk -F'\t' -v host="$canonical_host" '$1 == host {found=1} END {exit !found}' "$REGISTRY_FILE"; then
+                return 0
+            fi
+        fi
+    fi
+
+    awk -F'\t' -v host="$normalized_host" '$1 == host {found=1} END {exit !found}' "$REGISTRY_FILE"
 }
 
 registry_remove_host() {
     local host="$1"
+    local normalized_host=""
+    local domain_suffix=""
+    local canonical_host=""
     [ -f "$REGISTRY_FILE" ] || return 0
 
-    awk -F'\t' -v host="$host" '$1 != host' "$REGISTRY_FILE" > "${REGISTRY_FILE}.tmp"
+    normalized_host="$(normalize_token "$host")"
+    canonical_host="$normalized_host"
+    if is_valid_host_label "$normalized_host"; then
+        if domain_suffix="$(resolve_domain_suffix 2>/dev/null)"; then
+            canonical_host="${normalized_host}.${domain_suffix}"
+        fi
+    fi
+
+    awk -F'\t' -v host="$normalized_host" -v canonical="$canonical_host" '$1 != host && $1 != canonical' "$REGISTRY_FILE" > "${REGISTRY_FILE}.tmp"
     mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
 }
 
@@ -1430,10 +1563,19 @@ registry_upsert_host() {
     local created_at="$5"
     local bitrix_type="${6:--}"
     local core_id="${7:--}"
+    local normalized_host=""
+    local domain_suffix=""
 
-    registry_remove_host "$host"
+    normalized_host="$(normalize_token "$host")"
+    if is_valid_host_label "$normalized_host"; then
+        if domain_suffix="$(resolve_domain_suffix 2>/dev/null)"; then
+            normalized_host="${normalized_host}.${domain_suffix}"
+        fi
+    fi
+
+    registry_remove_host "$normalized_host"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "$host" \
+        "$normalized_host" \
         "$preset" \
         "$php_version" \
         "$db_type" \
@@ -1445,8 +1587,30 @@ registry_upsert_host() {
 registry_get_field() {
     local host="$1"
     local field="$2"
+    local normalized_host=""
+    local domain_suffix=""
+    local canonical_host=""
     [ -f "$REGISTRY_FILE" ] || { echo ""; return 0; }
-    awk -F'\t' -v host="$host" -v field="$field" '$1 == host {print $field; found=1; exit} END {if (!found) print ""}' "$REGISTRY_FILE"
+
+    normalized_host="$(normalize_token "$host")"
+    canonical_host="$normalized_host"
+    if is_valid_host_label "$normalized_host"; then
+        if domain_suffix="$(resolve_domain_suffix 2>/dev/null)"; then
+            canonical_host="${normalized_host}.${domain_suffix}"
+        fi
+    fi
+
+    awk -F'\t' -v host="$normalized_host" -v canonical="$canonical_host" -v field="$field" '
+        $1 == canonical {print $field; found=1; exit}
+        $1 == host {fallback=$field; seen_fallback=1}
+        END {
+            if (!found && seen_fallback) {
+                print fallback
+            } else if (!found) {
+                print ""
+            }
+        }
+    ' "$REGISTRY_FILE"
 }
 
 acquire_bindings_lock() {
@@ -1863,6 +2027,13 @@ infra_mount_bind_failure_detected() {
 }
 
 runtime_infra_up() {
+    local domain_suffix=""
+    local docker_domain="docker.loc"
+
+    if domain_suffix="$(resolve_domain_suffix 2>/dev/null)"; then
+        docker_domain="docker.$domain_suffix"
+    fi
+
     echo "🚀 Запуск инфраструктурных контейнеров..."
     echo "   ⏳ Первый запуск может занять несколько минут (загрузка образов Docker)..."
     prepare_infra_build_context
@@ -1903,7 +2074,7 @@ runtime_infra_up() {
             docker rm -f devpanel >/dev/null 2>&1 || true
             set_infra_runtime_mode "fallback"
             echo "   ✅ Запущен fallback-режим инфраструктуры (все сервисы активированы)"
-            echo "   ℹ️  DevPanel доступен через https://docker.dev и резервно через http://localhost:8088"
+            echo "   ℹ️  DevPanel доступен через https://$docker_domain и резервно через http://localhost:8088"
             return 0
         fi
 
@@ -2134,8 +2305,18 @@ EOF
 }
 
 create_host() {
-    local host="$1"
+    local host_input="$1"
+    local host="$host_input"
+    local domain_suffix=""
     shift
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "create")"; then
+        exit 1
+    fi
 
     local php_version="8.2"
     local db_type="mysql"
@@ -2158,7 +2339,7 @@ create_host() {
     local project_dir="$PROJECTS_DIR/$host"
     local is_bitrix=0
     local core_owner_host=""
-    log_event "INFO" "create_host_begin host=$host"
+    log_event "INFO" "create_host_begin host=$host input=$host_input domain_suffix=$domain_suffix"
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -2667,13 +2848,24 @@ EOF
 }
 
 delete_host() {
-    local host="$1"
+    local host_input="$1"
+    local host="$host_input"
+    local domain_suffix=""
     shift
 
     local yes=0
     local lock_acquired=0
     local hosts_mode="${HOSTCTL_HOSTS_MODE:-auto}"
-    log_event "INFO" "delete_host_begin host=$host"
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+
+    log_event "INFO" "delete_host_begin host=$host input=$host_input domain_suffix=$domain_suffix"
 
     hosts_mode="$(to_lower "$hosts_mode")"
     case "$hosts_mode" in
@@ -2815,9 +3007,20 @@ delete_host() {
 }
 
 start_host() {
-    local host="$1"
+    local host_input="$1"
+    local host="$host_input"
+    local domain_suffix=""
     shift
-    log_event "INFO" "start_host_begin host=$host"
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+
+    log_event "INFO" "start_host_begin host=$host input=$host_input domain_suffix=$domain_suffix"
 
     if [ "$#" -gt 0 ]; then
         echo "Unknown option(s) for start: $*"
@@ -2927,9 +3130,20 @@ start_host() {
 }
 
 stop_host() {
-    local host="$1"
+    local host_input="$1"
+    local host="$host_input"
+    local domain_suffix=""
     shift
-    log_event "INFO" "stop_host_begin host=$host"
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+
+    log_event "INFO" "stop_host_begin host=$host input=$host_input domain_suffix=$domain_suffix"
 
     if [ "$#" -gt 0 ]; then
         echo "Unknown option(s) for stop: $*"
@@ -3062,6 +3276,20 @@ infra_restart() {
 
 show_status() {
     local filter_host="${1:-}"
+    local filter_input="$filter_host"
+    local domain_suffix=""
+    local canonical_host=""
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+
+    if [ -n "$filter_host" ]; then
+        if ! filter_host="$(canonicalize_host_name "$filter_host" "$domain_suffix" "existing")"; then
+            exit 1
+        fi
+    fi
+
     log_event "INFO" "show_status_begin filter_host=${filter_host:-all}"
 
     ensure_registry
@@ -3072,6 +3300,10 @@ show_status() {
     if [ -f "$REGISTRY_FILE" ]; then
         while IFS=$'\t' read -r host _; do
             [ -n "${host:-}" ] || continue
+            canonical_host="$host"
+            if canonical_host="$(canonicalize_host_name "$host" "$domain_suffix" "existing" 2>/dev/null)"; then
+                host="$canonical_host"
+            fi
             if [ "${#hosts[@]}" -eq 0 ] || ! contains_host "$host" "${hosts[@]}"; then
                 hosts+=("$host")
             fi
@@ -3082,6 +3314,10 @@ show_status() {
     for compose_file in "$PROJECTS_DIR"/*/docker-compose.yml; do
         [ -f "$compose_file" ] || continue
         host="$(basename "$(dirname "$compose_file")")"
+        canonical_host="$host"
+        if canonical_host="$(canonicalize_host_name "$host" "$domain_suffix" "existing" 2>/dev/null)"; then
+            host="$canonical_host"
+        fi
         if [ "${#hosts[@]}" -eq 0 ] || ! contains_host "$host" "${hosts[@]}"; then
             hosts+=("$host")
         fi
@@ -3092,6 +3328,9 @@ show_status() {
             hosts=("$filter_host")
         else
             echo "Error: host '$filter_host' not found."
+            if [ -n "$filter_input" ] && [ "$filter_input" != "$filter_host" ]; then
+                echo "Hint: input '$filter_input' was normalized to '$filter_host'."
+            fi
             print_status_hint
             exit 1
         fi
@@ -3102,8 +3341,8 @@ show_status() {
         exit 0
     fi
 
-    printf "%-32s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "HOST" "PRESET" "PHP" "DB" "BITRIX_TYPE" "CORE_ID" "STATUS" "CONTAINERS"
-    printf "%-32s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "--------------------------------" "----------" "-------" "----------" "------------" "--------------------" "----------" "----------"
+    printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "HOST" "ZONE" "PRESET" "PHP" "DB" "BITRIX_TYPE" "CORE_ID" "STATUS" "CONTAINERS"
+    printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "--------------------------------" "-------" "----------" "-------" "----------" "------------" "--------------------" "----------" "----------"
 
     local running_count=0
     local stopped_count=0
@@ -3143,7 +3382,12 @@ show_status() {
             *) error_count=$((error_count + 1)) ;;
         esac
 
-        printf "%-32s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "$host" "$preset" "$php_version" "$db_type" "$bitrix_type" "$core_id" "$status" "$containers"
+        zone_marker="active"
+        if is_legacy_host "$host" "$domain_suffix"; then
+            zone_marker="legacy"
+        fi
+
+        printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "$host" "$zone_marker" "$preset" "$php_version" "$db_type" "$bitrix_type" "$core_id" "$status" "$containers"
     done
 
     echo

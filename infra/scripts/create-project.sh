@@ -4,6 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOMAIN_ZONE_HELPER="$SCRIPT_DIR/domain-zone.sh"
 # Если скрипт выполняется через docker run, используем монтированные пути
 if [ -d "/projects" ] && [ -w "/projects" ]; then
     # Выполняется в контейнере с монтированным /projects
@@ -20,21 +21,50 @@ else
     TEMPLATES_DIR="${TEMPLATES_DIR:-$INFRA_DIR/templates}"
 fi
 
+if [ -f "$DOMAIN_ZONE_HELPER" ]; then
+    # shellcheck source=/dev/null
+    source "$DOMAIN_ZONE_HELPER"
+fi
+
 if [ -z "$1" ]; then
     echo "Использование: $0 <project-name> [php-version] [db-type] [preset]"
     echo ""
     echo "Примеры:"
-    echo "  $0 my-project.dev 8.2 mysql empty"
-    echo "  $0 my-project.dev 8.1 mysql bitrix"
-    echo "  $0 my-project.dev 8.3 postgres empty"
+    echo "  $0 my-project 8.2 mysql empty"
+    echo "  $0 my-project 8.1 mysql bitrix"
+    echo "  $0 my-project 8.3 postgres empty"
     exit 1
 fi
 
-PROJECT_NAME="$1"
+resolve_project_name() {
+    local raw_name="$1"
+    local domain_suffix=""
+    local canonical_name=""
+
+    if ! command -v dz_resolve_domain_suffix >/dev/null 2>&1 || ! command -v dz_canonicalize_host >/dev/null 2>&1; then
+        echo "$raw_name"
+        return 0
+    fi
+
+    domain_suffix="$(dz_resolve_domain_suffix "${DOMAIN_SUFFIX:-}" "$INFRA_DIR/.env.global" "$INFRA_DIR/.env.global.example" "loc")" || return 1
+    canonical_name="$(dz_canonicalize_host "$raw_name" "$domain_suffix" "create")" || return 1
+    echo "$canonical_name"
+}
+
+PROJECT_INPUT="$1"
+if ! PROJECT_NAME="$(resolve_project_name "$PROJECT_INPUT")"; then
+    echo "❌ Некорректное имя проекта '$PROJECT_INPUT' для активной зоны DOMAIN_SUFFIX."
+    echo "   Используйте short-host ('my-project') или canonical-host ('my-project.<zone>')."
+    exit 1
+fi
 PHP_VERSION="${2:-8.2}"
 DB_TYPE="${3:-mysql}"
 PRESET_RAW="${4:-empty}"
 PHP_UPSTREAM="${PROJECT_NAME//./-}-php"
+
+if [ "$PROJECT_INPUT" != "$PROJECT_NAME" ]; then
+    echo "ℹ️  Имя проекта нормализовано: '$PROJECT_INPUT' -> '$PROJECT_NAME'"
+fi
 
 normalize_preset() {
     local raw="$1"
