@@ -676,6 +676,63 @@ function getProjectContainers($projectName) {
     return $containers;
 }
 
+/**
+ * Статус инфраструктурных контейнеров (Traefik, Adminer, Grafana, DevPanel).
+ * Возвращает ['services' => [...], 'lastCheck' => ISO8601, 'error' => bool].
+ * При ошибке Docker: error=true, services=[], lastCheck заполнен (FR-009).
+ */
+function getInfraStatus() {
+    $lastCheck = gmdate('Y-m-d\TH:i:s\Z');
+    $output = [];
+    exec("docker ps -a --format '{{.Names}}\t{{.Status}}' 2>&1", $output, $return);
+
+    if ($return !== 0) {
+        return ['services' => [], 'lastCheck' => $lastCheck, 'error' => true];
+    }
+
+    $services = [
+        'traefik' => ['name' => 'Traefik', 'status' => 'Down', 'container' => null],
+        'adminer' => ['name' => 'Adminer', 'status' => 'Down', 'container' => null],
+        'grafana' => ['name' => 'Grafana', 'status' => 'Down', 'container' => null],
+        'devpanel' => ['name' => 'DevPanel', 'status' => 'Down', 'container' => null],
+    ];
+
+    foreach ($output as $line) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $parts = preg_split('/\s+/', $line, 2);
+        $name = strtolower($parts[0] ?? '');
+        $status = $parts[1] ?? '';
+        $isUp = (strpos($status, 'Up') === 0);
+
+        if ($name === 'traefik') {
+            $services['traefik']['status'] = $isUp ? 'Up' : 'Down';
+            $services['traefik']['container'] = $parts[0];
+        } elseif (strpos($name, 'adminer') !== false) {
+            $services['adminer']['status'] = $isUp ? 'Up' : 'Down';
+            $services['adminer']['container'] = $parts[0];
+        } elseif (strpos($name, 'grafana') !== false) {
+            $services['grafana']['status'] = $isUp ? 'Up' : 'Down';
+            $services['grafana']['container'] = $parts[0];
+        } elseif ($name === 'devpanel' || $name === 'devpanel-fallback') {
+            $services['devpanel']['status'] = $isUp ? 'Up' : 'Down';
+            $services['devpanel']['container'] = $parts[0];
+        }
+    }
+
+    return ['services' => $services, 'lastCheck' => $lastCheck, 'error' => false];
+}
+
+$currentPage = trim($_GET['page'] ?? 'hosts');
+$infraStatus = null;
+if ($currentPage === 'status') {
+    try {
+        $infraStatus = getInfraStatus();
+    } catch (Throwable $e) {
+        $infraStatus = ['services' => [], 'lastCheck' => gmdate('Y-m-d\TH:i:s\Z'), 'error' => true];
+    }
+}
+
 $hostsRegistry = parseHostsRegistry($stateDir, $projectsDir);
 [$bitrixCoreById, $bitrixCoreByOwner] = ($projectsDir && is_dir($projectsDir))
     ? parseBitrixCoreRegistry($stateDir, $projectsDir)
@@ -1397,6 +1454,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
     </div>
 
     <div class="container">
+        <?php $baseHref = htmlspecialchars($_SERVER['SCRIPT_NAME'] ?? '/index.php'); ?>
+        <nav class="nav nav-tabs mb-4">
+            <a class="nav-link <?= $currentPage !== 'status' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=hosts">Управление хостами</a>
+            <a class="nav-link <?= $currentPage === 'status' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=status">Статус инфраструктуры</a>
+        </nav>
+
         <?php if ($domainZoneError): ?>
             <div class="alert alert-warning alert-dismissible fade show" role="alert">
                 <i class="bi bi-exclamation-triangle"></i> <?= htmlspecialchars($domainZoneError) ?>
@@ -1419,6 +1482,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             </div>
         <?php endif; ?>
 
+        <?php if ($currentPage === 'status'): ?>
+        <!-- Страница: Статус инфраструктуры -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h3 class="mb-3"><i class="bi bi-activity"></i> Статус инфраструктуры</h3>
+                <?php if ($infraStatus && $infraStatus['error']): ?>
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i> Данные недоступны
+                    <span class="text-muted small ms-2">(проверено: <?= htmlspecialchars($infraStatus['lastCheck']) ?>)</span>
+                </div>
+                <?php elseif ($infraStatus && !$infraStatus['error']): ?>
+                <p class="text-muted small mb-3">Проверено: <?= htmlspecialchars($infraStatus['lastCheck']) ?></p>
+                <div class="row">
+                    <?php foreach ($infraStatus['services'] as $key => $s):
+                        $linkKey = ($key === 'devpanel') ? 'docker' : $key;
+                    ?>
+                    <div class="col-md-6 col-lg-3 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body d-flex align-items-center justify-content-between">
+                                <div>
+                                    <h6 class="mb-1"><?= htmlspecialchars($s['name']) ?></h6>
+                                    <span class="badge bg-<?= $s['status'] === 'Up' ? 'success' : 'secondary' ?>"><?= htmlspecialchars($s['status']) ?></span>
+                                </div>
+                                <?php if ($s['status'] === 'Up' && isset($serviceDomains[$linkKey])): ?>
+                                <a href="https://<?= htmlspecialchars($serviceDomains[$linkKey]) ?><?= $key === 'traefik' ? '/dashboard/' : '' ?>" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-box-arrow-up-right"></i></a>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php else: ?>
+        <!-- Страница: Управление хостами -->
         <!-- Ресурсы инфраструктуры -->
         <div class="row mb-4">
             <div class="col-12">
@@ -1864,6 +1963,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 <?php endif; ?>
             </div>
         </div>
+        <?php endif; ?>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.0/dist/js/coreui.bundle.min.js"></script>
