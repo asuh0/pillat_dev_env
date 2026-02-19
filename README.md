@@ -34,25 +34,28 @@
 
 Перед стартом убедитесь, что Docker Desktop запущен.
 
+0) Выполните bootstrap (рекомендуется сразу после `git clone`):
+
+```bash
+bash ./infra/scripts/bootstrap.sh
+```
+
 1) Подготовьте infra-конфиг:
 
 ```bash
-cd infra
-cp .env.global.example .env.global
+cp ./infra/.env.global.example ./infra/.env.global
 ```
 
 2) Сгенерируйте SSL для локальной среды:
 
 ```bash
-cd infra/scripts
-bash ./generate-ssl.sh
+bash ./infra/scripts/generate-ssl.sh --skip-trust
 ```
 
 3) Запустите общую инфраструктуру:
 
 ```bash
-cd infra
-bash ./scripts/start-all.sh
+bash ./infra/scripts/start-all.sh
 ```
 
 Скрипт использует `hostctl.sh infra-start` и автоматически включает fallback-режим при проблемах bind-mount (например, на внешнем диске).
@@ -70,6 +73,19 @@ bash ./scripts/start-all.sh
 
 ```bash
 curl -k --resolve docker.dev:443:127.0.0.1 https://docker.dev
+```
+
+## Проверка на свежем clone
+
+```bash
+git clone <repo-url> pillat_dev_env_test
+cd pillat_dev_env_test
+bash ./infra/scripts/bootstrap.sh
+cp ./infra/.env.global.example ./infra/.env.global
+# Опционально: отключить fallback и работать только в primary режиме
+# echo "INFRA_FALLBACK_ENABLED=0" >> ./infra/.env.global
+bash ./infra/scripts/start-all.sh
+bash ./infra/scripts/hostctl.sh status
 ```
 
 ## Запуск и остановка инфраструктурных пакетов (актуальный flow)

@@ -18,6 +18,10 @@ if [ ! -f .env.global ]; then
     exit 1
 fi
 
+# Bootstrap окружения (права скриптов, каталоги, preflight Docker).
+echo "🧰 Подготовка окружения (bootstrap)..."
+bash "$SCRIPT_DIR/bootstrap.sh"
+
 # Проверка/обновление SSL-сертификатов
 echo "🔐 Проверка SSL-сертификатов..."
 bash ./scripts/generate-ssl.sh --skip-trust

@@ -84,6 +84,39 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+infra_fallback_enabled() {
+    local raw="${INFRA_FALLBACK_ENABLED:-}"
+    local normalized
+
+    if [ -z "$raw" ] && [ -f "$INFRA_ENV_FILE" ]; then
+        raw="$(awk '
+            index($0, "INFRA_FALLBACK_ENABLED=") == 1 {
+                sub("^INFRA_FALLBACK_ENABLED=", "", $0)
+                gsub(/^[[:space:]]+/, "", $0)
+                gsub(/[[:space:]]+$/, "", $0)
+                print $0
+                exit
+            }
+        ' "$INFRA_ENV_FILE" 2>/dev/null || true)"
+    fi
+
+    [ -n "$raw" ] || raw="1"
+    normalized="$(to_lower "$raw")"
+
+    case "$normalized" in
+        ""|1|true|yes|on|enabled)
+            return 0
+            ;;
+        0|false|no|off|disabled)
+            return 1
+            ;;
+        *)
+            # Be permissive for unknown values to preserve current behavior.
+            return 0
+            ;;
+    esac
+}
+
 normalize_container_state() {
     local raw="${1:-}"
     local state
@@ -1850,6 +1883,12 @@ runtime_infra_up() {
     # если Docker Desktop не может создать bind-mount пути,
     # запускаем полный fallback-стек без bind-монтов исходников/config.
     if [ -f "$INFRA_DEVPANEL_FALLBACK_COMPOSE_FILE" ] && infra_mount_bind_failure_detected "$output"; then
+        if ! infra_fallback_enabled; then
+            echo "   ⚠️  Обнаружена ошибка bind-mount, но fallback отключен (INFRA_FALLBACK_ENABLED=0)."
+            echo "   💡 Либо исправьте bind-mount/shared paths, либо включите fallback через INFRA_FALLBACK_ENABLED=1."
+            return $exit_code
+        fi
+
         echo "   ⚠️  Обнаружена ошибка bind-mount. Пробуем fallback-режим инфраструктуры..."
         echo "      (полный стек без bind-монтов: traefik/adminer/redis/loki/promtail/grafana/devpanel)"
 
