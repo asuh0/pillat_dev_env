@@ -2678,7 +2678,9 @@ EOF
     echo "📦 Создание хоста '$host'..."
     echo "   Конфигурация: PHP=$php_version, БД=$db_type, пресет=$(display_preset "$mapped_preset"), TZ=$timezone, порт БД=$db_external_port"
     [ "$bitrix_type" != "-" ] && echo "   Bitrix: тип=$bitrix_type, core_id=$core_id"
-    if ! "$CREATE_SCRIPT" "$host" "$php_version" "$db_type" "$mapped_preset"; then
+    local create_bitrix_type=""
+    [ "$is_bitrix" -eq 1 ] && [ "$bitrix_type" != "-" ] && create_bitrix_type="$bitrix_type"
+    if ! "$CREATE_SCRIPT" "$host" "$php_version" "$db_type" "$mapped_preset" "$create_bitrix_type"; then
         [ "$lock_acquired" -eq 1 ] && release_bindings_lock
         exit 1
     fi

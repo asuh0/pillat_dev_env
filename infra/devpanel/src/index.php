@@ -693,6 +693,9 @@ function getInfraStatus() {
     $services = [
         'traefik' => ['name' => 'Traefik', 'status' => 'Down', 'container' => null],
         'adminer' => ['name' => 'Adminer', 'status' => 'Down', 'container' => null],
+        'redis' => ['name' => 'Redis', 'status' => 'Down', 'container' => null],
+        'loki' => ['name' => 'Loki', 'status' => 'Down', 'container' => null],
+        'promtail' => ['name' => 'Promtail', 'status' => 'Down', 'container' => null],
         'grafana' => ['name' => 'Grafana', 'status' => 'Down', 'container' => null],
         'devpanel' => ['name' => 'DevPanel', 'status' => 'Down', 'container' => null],
     ];
@@ -701,37 +704,94 @@ function getInfraStatus() {
         $line = trim($line);
         if ($line === '') continue;
         $parts = preg_split('/\s+/', $line, 2);
-        $name = strtolower($parts[0] ?? '');
+        $containerName = $parts[0] ?? '';
+        $name = strtolower($containerName);
         $status = $parts[1] ?? '';
         $isUp = (strpos($status, 'Up') === 0);
 
         if ($name === 'traefik') {
             $services['traefik']['status'] = $isUp ? 'Up' : 'Down';
-            $services['traefik']['container'] = $parts[0];
-        } elseif (strpos($name, 'adminer') !== false) {
+            $services['traefik']['container'] = $containerName;
+        } elseif ($name === 'adminer') {
             $services['adminer']['status'] = $isUp ? 'Up' : 'Down';
-            $services['adminer']['container'] = $parts[0];
-        } elseif (strpos($name, 'grafana') !== false) {
+            $services['adminer']['container'] = $containerName;
+        } elseif ($name === 'redis') {
+            $services['redis']['status'] = $isUp ? 'Up' : 'Down';
+            $services['redis']['container'] = $containerName;
+        } elseif ($name === 'loki') {
+            $services['loki']['status'] = $isUp ? 'Up' : 'Down';
+            $services['loki']['container'] = $containerName;
+        } elseif ($name === 'promtail') {
+            $services['promtail']['status'] = $isUp ? 'Up' : 'Down';
+            $services['promtail']['container'] = $containerName;
+        } elseif ($name === 'grafana') {
             $services['grafana']['status'] = $isUp ? 'Up' : 'Down';
-            $services['grafana']['container'] = $parts[0];
+            $services['grafana']['container'] = $containerName;
         } elseif ($name === 'devpanel' || $name === 'devpanel-fallback') {
             $services['devpanel']['status'] = $isUp ? 'Up' : 'Down';
-            $services['devpanel']['container'] = $parts[0];
+            $services['devpanel']['container'] = $containerName;
         }
     }
 
     return ['services' => $services, 'lastCheck' => $lastCheck, 'error' => false];
 }
 
-$currentPage = trim($_GET['page'] ?? 'hosts');
-$infraStatus = null;
-if ($currentPage === 'status') {
-    try {
-        $infraStatus = getInfraStatus();
-    } catch (Throwable $e) {
-        $infraStatus = ['services' => [], 'lastCheck' => gmdate('Y-m-d\TH:i:s\Z'), 'error' => true];
+/**
+ * Сводка по проектам: сколько всего и сколько запущено.
+ * Один вызов docker ps -a, группировка по префиксу имени контейнера.
+ */
+function getProjectsStatusSummary(array $projects) {
+    $output = [];
+    exec("docker ps -a --format '{{.Names}}\t{{.Status}}' 2>&1", $output, $return);
+    $runningByProject = [];
+    $totalByProject = [];
+    foreach ($projects as $p) {
+        $name = $p['name'];
+        $runningByProject[$name] = 0;
+        $totalByProject[$name] = 0;
     }
+    foreach ($output as $line) {
+        $line = trim($line);
+        if ($line === '' || stripos($line, 'permission') !== false || stripos($line, 'denied') !== false) continue;
+        $parts = preg_split('/\s+/', $line, 2);
+        $containerName = $parts[0] ?? '';
+        $status = $parts[1] ?? '';
+        $isUp = (strpos($status, 'Up') === 0);
+        $projList = $projects;
+        usort($projList, function ($a, $b) { return strlen($b['name']) - strlen($a['name']); });
+        foreach ($projList as $p) {
+            $name = $p['name'];
+            $norm = str_replace('.', '-', $name);
+            $prefixes = [$name . '-', $name . '_', $norm . '-', $norm . '_'];
+            $matched = ($containerName === $name);
+            foreach ($prefixes as $pref) {
+                if (strpos($containerName, $pref) === 0) { $matched = true; break; }
+            }
+            if ($matched) {
+                $totalByProject[$name]++;
+                if ($isUp) $runningByProject[$name]++;
+                break;
+            }
+        }
+    }
+    $totalRunning = array_sum($runningByProject);
+    $totalProjects = count($projects);
+    $projectsWithRunning = count(array_filter($runningByProject));
+    return ['total' => $totalProjects, 'running' => $projectsWithRunning, 'containersUp' => $totalRunning];
 }
+
+$currentPage = trim($_GET['page'] ?? 'projects');
+$validPages = ['projects', 'infra', 'hosts', 'help'];
+if (!in_array($currentPage, $validPages, true)) {
+    $currentPage = 'projects';
+}
+$infraStatus = null;
+try {
+    $infraStatus = getInfraStatus();
+} catch (Throwable $e) {
+    $infraStatus = ['services' => [], 'lastCheck' => gmdate('Y-m-d\TH:i:s\Z'), 'error' => true];
+}
+$headerProjectSummary = getProjectsStatusSummary($projects);
 
 $hostsRegistry = parseHostsRegistry($stateDir, $projectsDir);
 [$bitrixCoreById, $bitrixCoreByOwner] = ($projectsDir && is_dir($projectsDir))
@@ -761,12 +821,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $actionResult = ['type' => 'error', 'message' => $domainZoneError];
                 break;
             }
-            $canon = devpanel_canonicalize_host($projectNameRaw, $domainSuffix, 'create');
-            if ($canon['error'] !== null) {
-                $actionResult = ['type' => 'error', 'message' => $canon['error']];
-                break;
+            // ext_kernel: core_id без доменной зоны (core-main-shop), остальные — домен
+            if ($preset === 'bitrix' && $bitrixType === 'ext_kernel') {
+                $normalized = strtolower(trim(preg_replace('/^[\s"\']+|[\s"\']+$/u', '', $projectNameRaw)));
+                if ($normalized === '') {
+                    $actionResult = ['type' => 'error', 'message' => 'Пустое имя проекта (core_id).'];
+                    break;
+                }
+                if (!preg_match('/^[a-z0-9][a-z0-9-]{1,62}$/', $normalized)) {
+                    $actionResult = ['type' => 'error', 'message' => "Некорректный core_id '$projectNameRaw'. Допустимо: a-z, 0-9, дефис; 2–63 символа."];
+                    break;
+                }
+                $projectName = $normalized;
+            } else {
+                $canon = devpanel_canonicalize_host($projectNameRaw, $domainSuffix, 'create');
+                if ($canon['error'] !== null) {
+                    $actionResult = ['type' => 'error', 'message' => $canon['error']];
+                    break;
+                }
+                $projectName = $canon['canonical'];
             }
-            $projectName = $canon['canonical'];
 
             if (!empty($projectName) && preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
                 if (file_exists($hostctlScript)) {
@@ -1324,6 +1398,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 exit;
             }
             break;
+
     }
 }
 
@@ -1391,74 +1466,158 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DevPanel - Управление Docker проектами</title>
-    <link href="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.0/dist/css/coreui.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <?php
+    $vendorBase = __DIR__ . '/vendor';
+    $useLocalAssets = is_file($vendorBase . '/coreui/coreui.min.css');
+    $coreuiCss = $useLocalAssets ? 'vendor/coreui/coreui.min.css' : 'https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.0/dist/css/coreui.min.css';
+    $iconsCss = $useLocalAssets ? 'vendor/bootstrap-icons/bootstrap-icons.css' : 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css';
+    $bootstrapJs = $useLocalAssets ? 'vendor/bootstrap/bootstrap.bundle.min.js' : 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js';
+    ?>
+    <link href="<?= htmlspecialchars($coreuiCss) ?>" rel="stylesheet">
+    <link rel="stylesheet" href="<?= htmlspecialchars($iconsCss) ?>">
     <style>
         :root {
             --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             --card-shadow: 0 2px 8px rgba(0,0,0,0.1);
             --card-hover-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            --sidebar-width: 220px;
+            --header-height: 56px;
         }
-        body {
-            background: #f5f7fa;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; margin: 0; }
+        .app-header {
+            position: fixed; top: 0; left: 0; right: 0; height: var(--header-height);
+            background: #fff; border-bottom: 1px solid #e5e7eb; z-index: 1030;
+            display: flex; align-items: center; justify-content: space-between; padding: 0 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
         }
-        .header {
-            background: var(--primary-gradient);
-            color: white;
-            padding: 2rem 0;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-bottom: 2rem;
+        .app-header-brand { font-weight: 600; font-size: 1rem; color: #1e293b; display: flex; align-items: center; gap: 0.5rem; }
+        .header-status { display: flex; align-items: center; gap: 0.75rem; font-size: 0.8rem; flex-wrap: wrap; }
+        .header-status a { text-decoration: none; color: inherit; }
+        .header-status-badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; }
+        .header-status-badge.infrastructure { background: #f1f5f9; color: #475569; }
+        .header-status-badge.infrastructure.all-up { background: #dcfce7; color: #166534; }
+        .header-status-badge.infrastructure.partial { background: #fef3c7; color: #92400e; }
+        .header-status-badge.projects { background: #f1f5f9; color: #475569; }
+        .header-status-badge.projects.all-up { background: #dcfce7; color: #166534; }
+        .header-status-badge.projects.partial { background: #fef3c7; color: #92400e; }
+        .layout-wrapper { display: flex; min-height: 100vh; padding-top: var(--header-height); }
+        .sidebar {
+            position: fixed;
+            top: var(--header-height);
+            left: 0;
+            bottom: 0;
+            width: var(--sidebar-width);
+            min-width: var(--sidebar-width);
+            background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+            color: rgba(255,255,255,0.9);
+            z-index: 1020;
+            transition: margin-left 0.2s, width 0.2s;
+            border-right: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
-        .resource-card {
-            transition: transform 0.2s, box-shadow 0.2s;
+        .main { margin-left: var(--sidebar-width); }
+        .sidebar-nav {
+            display: flex;
+            flex-direction: column;
+            padding: 0.15rem 0.45rem;
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
         }
-        .resource-card:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--card-hover-shadow);
+        .sidebar-nav .nav-link {
+            flex: 0 0 auto;
+            display: flex; align-items: center; gap: 0.4rem;
+            padding: 0.18rem 0.5rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: rgba(255,255,255,0.75);
+            text-decoration: none;
+            border-radius: 0.2rem;
+            margin-bottom: 0.02rem;
+            transition: all 0.15s ease;
         }
-        .project-card {
-            transition: transform 0.2s, box-shadow 0.2s;
+        .sidebar-nav .nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
+        .sidebar-nav .nav-link.active { background: rgba(255,255,255,0.12); color: #fff; border-left: 3px solid rgba(255,255,255,0.5); padding-left: calc(0.5rem - 3px); }
+        .sidebar-nav .nav-link i { font-size: 0.9rem; opacity: 0.9; width: 1.1em; text-align: center; }
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .main-header {
+            background: #fff;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 0.75rem 1.25rem;
+            display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
         }
-        .project-card:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--card-hover-shadow);
+        .main-header h2 { margin: 0; font-size: 1.1rem; font-weight: 600; color: #1e293b; }
+        .main-content { flex: 1; padding: 1.25rem; }
+        .resource-card, .project-card { transition: transform 0.2s, box-shadow 0.2s; }
+        .resource-card:hover, .project-card:hover { transform: translateY(-2px); box-shadow: var(--card-hover-shadow); }
+        .status-badge { font-size: 0.75rem; padding: 0.25rem 0.75rem; }
+        .container-item { font-family: 'Monaco','Menlo',monospace; font-size: 0.85rem; padding: 0.5rem; background: #f8f9fa; border-radius: 4px; margin-bottom: 0.5rem; }
+        .btn-action { margin: 0; white-space: nowrap; }
+        .btn-action-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+        .btn-action-group .btn, .btn-action-group a.btn { display: inline-flex; align-items: center; min-height: 31px; }
+        .modal-header { background: var(--primary-gradient); color: white; }
+        @media (max-width: 992px) {
+            .main { margin-left: 0; }
+            .sidebar { margin-left: calc(-1 * var(--sidebar-width)); position: fixed; top: var(--header-height); left: 0; bottom: 0; z-index: 1040; }
+            .sidebar.show { margin-left: 0; box-shadow: 4px 0 15px rgba(0,0,0,0.15); }
+            .sidebar-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1039; }
+            .sidebar-backdrop.show { display: block; }
+            .sidebar-toggle { display: block !important; }
         }
-        .status-badge {
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
-        }
-        .container-item {
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 0.85rem;
-            padding: 0.5rem;
-            background: #f8f9fa;
-            border-radius: 4px;
-            margin-bottom: 0.5rem;
-        }
-        .btn-action {
-            margin: 0.25rem;
-        }
-        .modal-header {
-            background: var(--primary-gradient);
-            color: white;
-        }
+        .sidebar-toggle { display: none; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div class="container">
-            <h1 class="mb-2"><i class="bi bi-boxes"></i> DevPanel</h1>
-            <p class="mb-0 opacity-75">Управление Docker проектами и инфраструктурой</p>
+    <header class="app-header">
+        <div class="d-flex align-items-center">
+            <button class="btn btn-link text-body sidebar-toggle d-lg-none p-0 me-2" type="button" onclick="var s=document.getElementById('sidebar');var b=document.getElementById('sidebarBackdrop');s.classList.toggle('show');b.classList.toggle('show');" aria-label="Меню"><i class="bi bi-list fs-4"></i></button>
+            <div class="app-header-brand"><i class="bi bi-boxes"></i> PillatDevPanel</div>
         </div>
-    </div>
-
-    <div class="container">
-        <?php $baseHref = htmlspecialchars($_SERVER['SCRIPT_NAME'] ?? '/index.php'); ?>
-        <nav class="nav nav-tabs mb-4">
-            <a class="nav-link <?= $currentPage !== 'status' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=hosts">Управление хостами</a>
-            <a class="nav-link <?= $currentPage === 'status' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=status">Статус инфраструктуры</a>
-        </nav>
+        <div class="header-status d-none d-sm-flex">
+            <?php
+            $baseHref = htmlspecialchars($_SERVER['SCRIPT_NAME'] ?? '/index.php');
+            $infraUp = 0; $infraTotal = 7;
+            if ($infraStatus && !$infraStatus['error']) {
+                foreach ($infraStatus['services'] as $s) { if ($s['status'] === 'Up') $infraUp++; }
+            }
+            $infraClass = ($infraStatus && $infraStatus['error']) ? '' : ($infraUp === $infraTotal ? 'all-up' : ($infraUp > 0 ? 'partial' : ''));
+            $projTotal = $headerProjectSummary['total'];
+            $projRun = $headerProjectSummary['running'];
+            $projClass = $projTotal === 0 ? '' : ($projRun === $projTotal ? 'all-up' : ($projRun > 0 ? 'partial' : ''));
+            ?>
+            <a href="<?= $baseHref ?>?page=infra" class="header-status-badge infrastructure <?= $infraClass ?>" title="Сервисы инфраструктуры">
+                <i class="bi bi-server"></i>
+                <span><?= $infraStatus && $infraStatus['error'] ? '—' : ($infraUp . '/' . $infraTotal) ?></span>
+            </a>
+            <a href="<?= $baseHref ?>?page=projects" class="header-status-badge projects <?= $projClass ?>" title="Проекты">
+                <i class="bi bi-folder"></i>
+                <span><?= $projTotal === 0 ? '0' : ($projRun . '/' . $projTotal) ?></span>
+            </a>
+        </div>
+    </header>
+    <div class="layout-wrapper">
+        <aside class="sidebar" id="sidebar">
+            <nav class="sidebar-nav" role="navigation">
+                <?php $baseHref = htmlspecialchars($_SERVER['SCRIPT_NAME'] ?? '/index.php'); ?>
+                <a class="nav-link <?= $currentPage === 'projects' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=projects"><i class="bi bi-folder"></i> Проекты</a>
+                <a class="nav-link <?= $currentPage === 'infra' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=infra"><i class="bi bi-server"></i> Инфраструктура</a>
+                <a class="nav-link <?= $currentPage === 'hosts' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=hosts"><i class="bi bi-file-earmark-text"></i> Hosts</a>
+                <a class="nav-link <?= $currentPage === 'help' ? 'active' : '' ?>" href="<?= $baseHref ?>?page=help"><i class="bi bi-question-circle"></i> Справка</a>
+            </nav>
+        </aside>
+        <div class="sidebar-backdrop d-lg-none" id="sidebarBackdrop" onclick="document.getElementById('sidebar').classList.remove('show'); this.classList.remove('show');"></div>
+        <main class="main">
+            <header class="main-header">
+                <h2>
+                    <?php
+                    $pageTitles = ['projects' => 'Проекты', 'infra' => 'Инфраструктура', 'hosts' => 'Конфигурация Hosts', 'help' => 'Справка'];
+                    echo htmlspecialchars($pageTitles[$currentPage] ?? 'DevPanel');
+                    ?>
+                </h2>
+            </header>
+            <div class="main-content">
 
         <?php if ($domainZoneError): ?>
             <div class="alert alert-warning alert-dismissible fade show" role="alert">
@@ -1482,11 +1641,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             </div>
         <?php endif; ?>
 
-        <?php if ($currentPage === 'status'): ?>
-        <!-- Страница: Статус инфраструктуры -->
+        <?php if ($currentPage === 'infra'): ?>
+        <?php
+            $infraServiceMeta = [
+                'traefik' => ['icon' => 'bi-speedometer2', 'color' => 'primary', 'desc' => 'Мониторинг роутинга', 'path' => '/dashboard/'],
+                'adminer' => ['icon' => 'bi-database', 'color' => 'success', 'desc' => 'Управление БД', 'path' => ''],
+                'redis' => ['icon' => 'bi-memory', 'color' => 'danger', 'desc' => 'Кэш и сессии', 'path' => ''],
+                'loki' => ['icon' => 'bi-journal-text', 'color' => 'info', 'desc' => 'Хранилище логов', 'path' => ''],
+                'promtail' => ['icon' => 'bi-collection', 'color' => 'info', 'desc' => 'Сбор логов', 'path' => ''],
+                'grafana' => ['icon' => 'bi-graph-up', 'color' => 'info', 'desc' => 'Логи и метрики', 'path' => ''],
+                'devpanel' => ['icon' => 'bi-boxes', 'color' => 'secondary', 'desc' => 'Эта панель', 'path' => '', 'linkKey' => 'docker'],
+            ];
+        ?>
+        <!-- Страница: Инфраструктура -->
         <div class="row mb-4">
             <div class="col-12">
-                <h3 class="mb-3"><i class="bi bi-activity"></i> Статус инфраструктуры</h3>
+                <h3 class="mb-3"><i class="bi bi-activity"></i> Сервисы</h3>
                 <?php if ($infraStatus && $infraStatus['error']): ?>
                 <div class="alert alert-warning">
                     <i class="bi bi-exclamation-triangle"></i> Данные недоступны
@@ -1496,17 +1666,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 <p class="text-muted small mb-3">Проверено: <?= htmlspecialchars($infraStatus['lastCheck']) ?></p>
                 <div class="row">
                     <?php foreach ($infraStatus['services'] as $key => $s):
-                        $linkKey = ($key === 'devpanel') ? 'docker' : $key;
+                        $meta = $infraServiceMeta[$key] ?? ['icon' => 'bi-box', 'color' => 'secondary', 'desc' => '', 'path' => ''];
+                        $linkKey = $meta['linkKey'] ?? $key;
+                        $isUp = ($s['status'] === 'Up');
+                        $hasLink = isset($serviceDomains[$linkKey]);
+                        $url = $hasLink ? 'https://' . $serviceDomains[$linkKey] . ($meta['path'] ?? '') : '#';
                     ?>
                     <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="card h-100">
-                            <div class="card-body d-flex align-items-center justify-content-between">
-                                <div>
-                                    <h6 class="mb-1"><?= htmlspecialchars($s['name']) ?></h6>
-                                    <span class="badge bg-<?= $s['status'] === 'Up' ? 'success' : 'secondary' ?>"><?= htmlspecialchars($s['status']) ?></span>
+                        <div class="card resource-card h-100">
+                            <div class="card-body">
+                                <div class="d-flex align-items-center justify-content-between mb-2">
+                                    <h6 class="card-title mb-0"><i class="bi <?= $meta['icon'] ?> text-<?= $meta['color'] ?>"></i> <?= htmlspecialchars($s['name']) ?></h6>
+                                    <span class="badge bg-<?= $isUp ? 'success' : 'secondary' ?>"><?= htmlspecialchars($s['status']) ?></span>
                                 </div>
-                                <?php if ($s['status'] === 'Up' && isset($serviceDomains[$linkKey])): ?>
-                                <a href="https://<?= htmlspecialchars($serviceDomains[$linkKey]) ?><?= $key === 'traefik' ? '/dashboard/' : '' ?>" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-box-arrow-up-right"></i></a>
+                                <p class="text-muted small mb-2"><?= htmlspecialchars($meta['desc']) ?></p>
+                                <?php if ($key === 'devpanel'): ?>
+                                <a href="<?= htmlspecialchars($url) ?>" class="btn btn-sm btn-outline-<?= $meta['color'] ?> w-100"><i class="bi bi-arrow-clockwise"></i> Обновить</a>
+                                <?php elseif ($isUp && $hasLink): ?>
+                                <a href="<?= htmlspecialchars($url) ?>" target="_blank" class="btn btn-sm btn-<?= $meta['color'] ?> w-100"><i class="bi bi-box-arrow-up-right"></i> Открыть</a>
+                                <?php else: ?>
+                                <span class="btn btn-sm btn-outline-secondary w-100 disabled opacity-75" style="pointer-events:none" title="Сервис остановлен"><i class="bi bi-box-arrow-up-right"></i> Открыть</span>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -1516,63 +1695,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 <?php endif; ?>
             </div>
         </div>
-        <?php else: ?>
-        <!-- Страница: Управление хостами -->
-        <!-- Ресурсы инфраструктуры -->
-        <div class="row mb-4">
+        <?php elseif ($currentPage === 'hosts'): ?>
+        <!-- Страница: Hosts -->
+        <div class="row">
             <div class="col-12">
-                <h3 class="mb-3"><i class="bi bi-server"></i> Ресурсы инфраструктуры</h3>
-                <div class="row">
-                    <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="card resource-card h-100">
-                            <div class="card-body">
-                                <h5 class="card-title"><i class="bi bi-speedometer2 text-primary"></i> Traefik Dashboard</h5>
-                                <p class="text-muted small mb-2">Мониторинг роутинга</p>
-                                <a href="https://<?= htmlspecialchars($serviceDomains['traefik']) ?>/dashboard/" target="_blank" class="btn btn-sm btn-primary w-100">
-                                    <i class="bi bi-box-arrow-up-right"></i> Открыть
-                                </a>
-                            </div>
-                        </div>
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0"><i class="bi bi-file-earmark-text"></i> Конфигурация /etc/hosts</h5>
                     </div>
-                    <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="card resource-card h-100">
-                            <div class="card-body">
-                            <h5 class="card-title"><i class="bi bi-database text-success"></i> Adminer</h5>
-                            <p class="text-muted small mb-2">Управление БД</p>
-                            <a href="https://<?= htmlspecialchars($serviceDomains['adminer']) ?>" target="_blank" class="btn btn-sm btn-success w-100">
-                                <i class="bi bi-box-arrow-up-right"></i> Открыть
-                            </a>
-                            </div>
+                    <div class="card-body">
+                        <p class="text-muted mb-3">
+                            <i class="bi bi-info-circle"></i> Скопируйте следующий конфиг и добавьте в файл <code>/etc/hosts</code> на вашем компьютере:
+                        </p>
+                        <div class="mb-3">
+                            <button class="btn btn-sm btn-outline-primary" onclick="copyHostsConfig()">
+                                <i class="bi bi-clipboard"></i> Копировать конфиг
+                            </button>
                         </div>
-                    </div>
-                    <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="card resource-card h-100">
-                            <div class="card-body">
-                            <h5 class="card-title"><i class="bi bi-graph-up text-info"></i> Grafana</h5>
-                            <p class="text-muted small mb-2">Логи и метрики</p>
-                            <a href="https://<?= htmlspecialchars($serviceDomains['grafana']) ?>" target="_blank" class="btn btn-sm btn-info w-100">
-                                <i class="bi bi-box-arrow-up-right"></i> Открыть
-                            </a>
-                            </div>
+                        <?php if ($hostsCompare !== null): ?>
+                        <div class="mb-3">
+                            <strong>Сравнение с вашим hosts:</strong> отсутствующие записи подсвечены <span class="text-danger">красным</span>, присутствующие — <span class="text-success">зелёным</span>.
                         </div>
-                    </div>
-                    <div class="col-md-6 col-lg-3 mb-3">
-                        <div class="card resource-card h-100">
-                            <div class="card-body">
-                            <h5 class="card-title"><i class="bi bi-boxes text-warning"></i> DevPanel</h5>
-                            <p class="text-muted small mb-2">Эта панель</p>
-                            <a href="https://<?= htmlspecialchars($serviceDomains['docker']) ?>" class="btn btn-sm btn-warning w-100">
-                                <i class="bi bi-arrow-clockwise"></i> Обновить
-                            </a>
-                            </div>
+                        <pre class="bg-light p-3 rounded border" id="hostsConfig" style="max-height: 400px; overflow-y: auto;"><code># Docker Development Infrastructure
+<?php foreach ($hostsCompare as $item): ?><span class="text-<?= $item['present'] ? 'success' : 'danger' ?>">127.0.0.1  <?= htmlspecialchars($item['domain']) ?></span>
+<?php endforeach; ?></code></pre>
+                        <?php else: ?>
+                        <pre class="bg-light p-3 rounded border" id="hostsConfig" style="max-height: 400px; overflow-y: auto;"><code># Docker Development Infrastructure
+<?php foreach ($hostsDomains as $domain): ?>127.0.0.1 <?= htmlspecialchars($domain) ?>
+
+<?php endforeach; ?></code></pre>
+                        <?php endif; ?>
+                        <hr class="my-4">
+                        <p class="text-muted mb-2">
+                            <i class="bi bi-arrow-left-right"></i> Вставьте содержимое вашего файла <code>/etc/hosts</code> и нажмите «Сравнить», чтобы подсветить отсутствующие записи красным.
+                        </p>
+                        <form method="POST" action="<?= $baseHref ?>?page=hosts" class="mb-3">
+                            <input type="hidden" name="hosts_compare" value="1">
+                            <textarea class="form-control font-monospace mb-2" name="hosts_content" rows="6" placeholder="# Вставьте сюда содержимое /etc/hosts (Linux/macOS) или C:\Windows\System32\drivers\etc\hosts (Windows)"><?= htmlspecialchars($hostsPasted) ?></textarea>
+                            <button type="submit" class="btn btn-sm btn-outline-info">
+                                <i class="bi bi-check2-square"></i> Сравнить
+                            </button>
+                        </form>
+                        <div class="alert alert-warning mt-3 mb-0">
+                            <i class="bi bi-exclamation-triangle"></i> <strong>Важно:</strong> Для редактирования <code>/etc/hosts</code> потребуются права администратора (sudo).
                         </div>
                     </div>
                 </div>
             </div>
         </div>
-
-        <!-- Создание нового проекта -->
-        <div class="row mb-4">
+        <?php elseif ($currentPage === 'help'): ?>
+        <!-- Страница: Справка -->
+        <div class="row">
+            <div class="col-12 col-lg-8">
+                <div class="card mb-4">
+                    <div class="card-header"><h5 class="mb-0"><i class="bi bi-info-circle"></i> О DevPanel</h5></div>
+                    <div class="card-body">
+                        <p>DevPanel — веб-интерфейс для управления Docker-проектами и локальной инфраструктурой.</p>
+                        <p class="mb-0">Доменная зона задаётся в <code>infra/.env.global</code> (ключ <code>DOMAIN_SUFFIX</code>). Все сервисы доступны по доменам <code>*.<?= htmlspecialchars($domainSuffix) ?></code>.</p>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><h5 class="mb-0"><i class="bi bi-book"></i> Документация</h5></div>
+                    <div class="card-body">
+                        <p class="mb-0">См. <code>README.md</code> и <code>infra/docs/DOMAIN_SUFFIX-MIGRATION.md</code> в репозитории.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php else: ?>
+        <!-- Страница: Проекты -->
+        <div class="row mb-4" id="create-form">
             <div class="col-12">
                 <div class="card">
                     <div class="card-header bg-primary text-white">
@@ -1618,8 +1810,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                         <option value="static">Static/SPA</option>
                                     </select>
                                 </div>
-                                <div class="col-md-1 mb-3 d-flex align-items-end">
-                                    <button type="submit" class="btn btn-primary w-100">
+                                <div class="col-12 col-md-auto mb-3 d-flex align-items-end">
+                                    <button type="submit" class="btn btn-primary text-nowrap">
                                         <i class="bi bi-plus-lg"></i> Создать
                                     </button>
                                 </div>
@@ -1648,54 +1840,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                 </div>
                             </div>
                         </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Конфиг /etc/hosts и сравнение с системным hosts -->
-        <div class="row mb-4">
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header bg-info text-white">
-                        <h5 class="mb-0"><i class="bi bi-file-earmark-text"></i> Конфигурация /etc/hosts</h5>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted mb-3">
-                            <i class="bi bi-info-circle"></i> Скопируйте следующий конфиг и добавьте в файл <code>/etc/hosts</code> на вашем компьютере:
-                        </p>
-                        <div class="mb-3">
-                            <button class="btn btn-sm btn-outline-primary" onclick="copyHostsConfig()">
-                                <i class="bi bi-clipboard"></i> Копировать конфиг
-                            </button>
-                        </div>
-                        <?php if ($hostsCompare !== null): ?>
-                        <div class="mb-3">
-                            <strong>Сравнение с вашим hosts:</strong> отсутствующие записи подсвечены <span class="text-danger">красным</span>, присутствующие — <span class="text-success">зелёным</span>.
-                        </div>
-                        <pre class="bg-light p-3 rounded border" id="hostsConfig" style="max-height: 400px; overflow-y: auto;"><code># Docker Development Infrastructure
-<?php foreach ($hostsCompare as $item): ?><span class="text-<?= $item['present'] ? 'success' : 'danger' ?>">127.0.0.1  <?= htmlspecialchars($item['domain']) ?></span>
-<?php endforeach; ?></code></pre>
-                        <?php else: ?>
-                        <pre class="bg-light p-3 rounded border" id="hostsConfig" style="max-height: 400px; overflow-y: auto;"><code># Docker Development Infrastructure
-<?php foreach ($hostsDomains as $domain): ?>127.0.0.1 <?= htmlspecialchars($domain) ?>
-
-<?php endforeach; ?></code></pre>
-                        <?php endif; ?>
-                        <hr class="my-4">
-                        <p class="text-muted mb-2">
-                            <i class="bi bi-arrow-left-right"></i> Вставьте содержимое вашего файла <code>/etc/hosts</code> и нажмите «Сравнить», чтобы подсветить отсутствующие записи красным.
-                        </p>
-                        <form method="POST" action="" class="mb-3">
-                            <input type="hidden" name="hosts_compare" value="1">
-                            <textarea class="form-control font-monospace mb-2" name="hosts_content" rows="6" placeholder="# Вставьте сюда содержимое /etc/hosts (Linux/macOS) или C:\Windows\System32\drivers\etc\hosts (Windows)"><?= htmlspecialchars($hostsPasted) ?></textarea>
-                            <button type="submit" class="btn btn-sm btn-outline-info">
-                                <i class="bi bi-check2-square"></i> Сравнить
-                            </button>
-                        </form>
-                        <div class="alert alert-warning mt-3 mb-0">
-                            <i class="bi bi-exclamation-triangle"></i> <strong>Важно:</strong> Для редактирования <code>/etc/hosts</code> потребуются права администратора (sudo).
-                        </div>
                     </div>
                 </div>
             </div>
@@ -1734,64 +1878,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     ?>
                         <div class="card project-card mb-3">
                             <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-3">
-                                <div>
-                                    <h4 class="mb-1">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div class="flex-grow-1">
+                                    <h4 class="mb-1 d-flex align-items-center gap-1 flex-wrap">
                                         <i class="bi bi-folder-fill text-primary"></i>
                                         <?= htmlspecialchars($project['name']) ?>
+                                        <a href="https://<?= htmlspecialchars($domain) ?>" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="Открыть сайт"><i class="bi bi-box-arrow-up-right"></i></a>
                                         <?php if ($domainSuffix && devpanel_is_legacy_host($project['name'], $domainSuffix)): ?>
-                                            <span class="badge bg-secondary ms-1" title="Хост вне активной зоны (<?= htmlspecialchars($domainSuffix) ?>)">legacy</span>
+                                            <span class="text-muted small" title="Хост вне активной зоны">(legacy)</span>
                                         <?php endif; ?>
                                     </h4>
+                                    <p class="text-muted small mb-0" style="font-weight: normal;">
+                                        <?php
+                                        $params = [];
+                                        if (!empty($metadata['php_version'])) $params[] = 'PHP ' . $metadata['php_version'];
+                                        if (!empty($metadata['db_type'])) $params[] = 'БД ' . $metadata['db_type'];
+                                        if (!empty($metadata['preset'])) $params[] = 'Пресет ' . $metadata['preset'];
+                                        if (!empty($metadata['bitrix_type'])) $params[] = 'Bitrix ' . $metadata['bitrix_type'];
+                                        if (!empty($metadata['core_id'])) $params[] = 'Core ' . $metadata['core_id'];
+                                        echo implode(' · ', $params);
+                                        ?>
+                                    </p>
                                     <p class="text-muted small mb-0">
-                                        <i class="bi bi-server"></i> Контейнеров: <?= count($containers) ?> 
-                                        (<span class="text-success"><?= $runningCount ?> запущено</span>)
+                                        <i class="bi bi-server"></i> Контейнеров: <?= count($containers) ?> (<span class="text-success"><?= $runningCount ?> запущено</span>)
                                     </p>
                                 </div>
-                                <span class="badge bg-<?= $isRunning ? 'success' : 'secondary' ?> status-badge">
+                                <span class="badge bg-<?= $isRunning ? 'success' : 'secondary' ?> status-badge flex-shrink-0">
                                     <?= $isRunning ? '<i class="bi bi-play-circle"></i> Запущен' : '<i class="bi bi-stop-circle"></i> Остановлен' ?>
                                 </span>
                             </div>
 
-                            <!-- Параметры проекта: PHP, БД, пресет, env -->
+                            <!-- Дополнительные параметры: хост БД, env -->
                             <div class="mb-3">
-                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" 
-                                        data-bs-target="#meta-<?= md5($project['name']) ?>" aria-expanded="false" aria-controls="meta-<?= md5($project['name']) ?>">
-                                    <i class="bi bi-info-circle"></i> Параметры проекта
-                                </button>
-                                <div class="collapse mt-2" id="meta-<?= md5($project['name']) ?>">
-                                    <div class="card card-body bg-light p-3" style="font-size: 0.9rem;">
-                                        <div class="row mb-2">
-                                            <?php if (!empty($metadata['php_version'])): ?>
-                                                <div class="col-auto"><strong>PHP:</strong> <?= htmlspecialchars($metadata['php_version']) ?></div>
-                                            <?php endif; ?>
-                                            <?php if (!empty($metadata['db_type'])): ?>
-                                                <div class="col-auto"><strong>БД:</strong> <?= htmlspecialchars($metadata['db_type']) ?></div>
-                                            <?php endif; ?>
-                                            <?php if (!empty($metadata['db_host'])): ?>
-                                                <div class="col-auto"><strong>Хост БД:</strong> <code><?= htmlspecialchars($metadata['db_host']) ?></code></div>
-                                            <?php endif; ?>
-                                            <?php if (!empty($metadata['preset'])): ?>
-                                                <div class="col-auto"><strong>Пресет:</strong> <?= htmlspecialchars($metadata['preset']) ?></div>
-                                            <?php endif; ?>
-                                            <div class="col-auto"><strong>Домен:</strong> <?= htmlspecialchars($metadata['domain']) ?></div>
-                                            <?php if (!empty($metadata['bitrix_type'])): ?>
-                                                <div class="col-auto"><strong>Bitrix type:</strong> <?= htmlspecialchars($metadata['bitrix_type']) ?></div>
-                                            <?php endif; ?>
-                                            <?php if (!empty($metadata['core_id'])): ?>
-                                                <div class="col-auto"><strong>Core ID:</strong> <?= htmlspecialchars($metadata['core_id']) ?></div>
-                                            <?php endif; ?>
-                                        </div>
+                                <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="collapse" 
+                                        data-bs-target="#meta-<?= md5($project['name']) ?>" aria-expanded="false">Хост БД, env</button>
+                                <div class="collapse mt-1" id="meta-<?= md5($project['name']) ?>">
+                                    <div class="p-2 text-muted" style="font-size: 0.85rem; font-weight: normal;">
+                                        <?php if (!empty($metadata['db_host'])): ?>
+                                            <span>Хост БД: <?= htmlspecialchars($metadata['db_host']) ?></span>
+                                        <?php endif; ?>
                                         <?php if ($deleteBlocked): ?>
-                                            <div class="alert alert-warning py-2 mb-2">
+                                            <div class="alert alert-warning py-2 mb-2 mt-2">
                                                 <i class="bi bi-shield-exclamation"></i>
                                                 Удаление этого core-хоста заблокировано: активные link-хосты <?= htmlspecialchars(implode(', ', $linkedHosts)) ?>.
                                             </div>
                                         <?php endif; ?>
                                         <?php if (!empty($metadata['env'])): ?>
                                             <div class="mt-2">
-                                                <strong>Переменные окружения (env):</strong>
-                                                <pre class="mb-0 mt-1 p-2 bg-white rounded border" style="font-size: 0.8rem; max-height: 200px; overflow-y: auto;"><?php foreach ($metadata['env'] as $k => $v) { echo htmlspecialchars($k . ' = ' . $v) . "\n"; } ?></pre>
+                                                <span>Переменные окружения:</span>
+                                                <pre class="mb-0 mt-1 p-2 bg-light rounded border" style="font-size: 0.8rem; max-height: 200px; overflow-y: auto;"><?php foreach ($metadata['env'] as $k => $v) { echo htmlspecialchars($k . ' = ' . $v) . "\n"; } ?></pre>
                                             </div>
                                         <?php endif; ?>
                                     </div>
@@ -1879,7 +2014,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                 </div>
                             <?php endif; ?>
 
-                            <div class="d-flex flex-wrap gap-2">
+                            <div class="btn-action-group">
                                 <form method="POST" action="" style="display: inline;">
                                     <input type="hidden" name="action" value="<?= $isRunning ? 'stop' : 'start' ?>">
                                     <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
@@ -1901,12 +2036,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                    target="_blank" 
                                    class="btn btn-sm btn-info btn-action">
                                     <i class="bi bi-file-text"></i> Логи
-                                </a>
-                                
-                                <a href="https://<?= htmlspecialchars($domain) ?>" 
-                                   target="_blank" 
-                                   class="btn btn-sm btn-primary btn-action">
-                                    <i class="bi bi-box-arrow-up-right"></i> Открыть сайт
                                 </a>
                                 
                                 <button type="button" 
@@ -1964,9 +2093,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             </div>
         </div>
         <?php endif; ?>
+            </div>
+        </main>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.0/dist/js/coreui.bundle.min.js"></script>
+    <script src="<?= htmlspecialchars($bootstrapJs) ?>"></script>
     <script>
         function copyHostsConfig() {
             const config = document.getElementById('hostsConfig').textContent;
@@ -2016,7 +2147,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
 
             const active = preset.value === 'bitrix';
             const isLink = bitrixType.value === 'link';
-            const isKernel = bitrixType.value === 'kernel' || bitrixType.value === 'ext_kernel';
+            const isKernel = bitrixType.value === 'kernel';
+            const isExtKernel = bitrixType.value === 'ext_kernel';
 
             // Показываем/скрываем поле core_id только для link
             if (active && isLink) {
@@ -2031,14 +2163,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             }
 
             // Обновляем label и placeholder для project_name в зависимости от типа Bitrix
-            // Kernel и ext_kernel - это полноценные сайты, поэтому используют домен
-            // Только для других пресетов - стандартный формат домена
+            // ext_kernel: core_id без доменной зоны (например core-main-shop)
+            // kernel/link: домен в активной зоне (my-project.pillat)
             if (projectNameLabel && projectNameInput) {
                 const suffix = projectNameInput.getAttribute('data-domain-suffix') || 'loc';
-                projectNameLabel.textContent = 'Имя проекта (домен)';
-                projectNameInput.placeholder = 'my-project.' + suffix;
-                projectNameInput.pattern = '[a-z0-9\\-\\.]+';
-                projectNameInput.title = 'Короткое имя или полный домен в зоне ' + suffix;
+                if (active && isExtKernel) {
+                    projectNameLabel.textContent = 'Имя проекта (core_id)';
+                    projectNameInput.placeholder = 'core-main-shop';
+                    projectNameInput.pattern = '[a-z0-9][a-z0-9-]{1,62}';
+                    projectNameInput.title = 'core_id: буквы, цифры, дефисы; 2–63 символа';
+                    if (projectNameInput.value && projectNameInput.value.includes('.')) {
+                        projectNameInput.value = '';
+                    }
+                } else {
+                    projectNameLabel.textContent = 'Имя проекта (домен)';
+                    projectNameInput.placeholder = 'my-project.' + suffix;
+                    projectNameInput.pattern = '[a-z0-9\\-\\.]+';
+                    projectNameInput.title = 'Короткое имя или полный домен в зоне ' + suffix;
+                }
             }
         }
 

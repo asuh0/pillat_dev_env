@@ -51,15 +51,42 @@ resolve_project_name() {
     echo "$canonical_name"
 }
 
+# ext_kernel: core_id без доменной зоны — при коротком имени используем как есть; при полном домене — canonicalize
+resolve_ext_kernel_name() {
+    local raw_name="$1"
+    local normalized=""
+    normalized="$(echo "$raw_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [ -n "$normalized" ] || return 1
+    if [[ "$normalized" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]]; then
+        echo "$normalized"
+        return 0
+    fi
+    return 1
+}
+
 PROJECT_INPUT="$1"
-if ! PROJECT_NAME="$(resolve_project_name "$PROJECT_INPUT")"; then
-    echo "❌ Некорректное имя проекта '$PROJECT_INPUT' для активной зоны DOMAIN_SUFFIX."
-    echo "   Используйте short-host ('my-project') или canonical-host ('my-project.<zone>')."
-    exit 1
-fi
 PHP_VERSION="${2:-8.2}"
 DB_TYPE="${3:-mysql}"
 PRESET_RAW="${4:-empty}"
+BITRIX_TYPE="${5:-}"
+
+if [ "$PRESET_RAW" = "bitrix" ] && [ "$BITRIX_TYPE" = "ext_kernel" ]; then
+    if PROJECT_NAME="$(resolve_ext_kernel_name "$PROJECT_INPUT" 2>/dev/null)"; then
+        : # короткое имя core_id без доменной зоны
+    else
+        if ! PROJECT_NAME="$(resolve_project_name "$PROJECT_INPUT" 2>/dev/null)"; then
+            echo "❌ Некорректное имя проекта '$PROJECT_INPUT' для ext_kernel."
+            echo "   Допустимо: core_id (core-main-shop) или домен в активной зоне (my-ext.dev)."
+            exit 1
+        fi
+    fi
+else
+    if ! PROJECT_NAME="$(resolve_project_name "$PROJECT_INPUT")"; then
+        echo "❌ Некорректное имя проекта '$PROJECT_INPUT' для активной зоны DOMAIN_SUFFIX."
+        echo "   Используйте short-host ('my-project') или canonical-host ('my-project.<zone>')."
+        exit 1
+    fi
+fi
 PHP_UPSTREAM="${PROJECT_NAME//./-}-php"
 
 if [ "$PROJECT_INPUT" != "$PROJECT_NAME" ]; then
