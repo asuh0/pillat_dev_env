@@ -906,6 +906,11 @@ compose_path.write_text(updated, encoding="utf-8")
 PY
 }
 
+# Bitrix multisite path map (T019):
+#   Shared paths (symlinks link->core): bitrix, upload, images
+#   Site-specific (own dir per link):   local
+#   Core: <core_host>/src/{bitrix,upload,images,local}
+#   Link: <link_host>/src/{bitrix->core, upload->core, images->core, local}
 prepare_link_shared_paths() {
     local core_host="$1"
     local link_host="$2"
@@ -2570,11 +2575,21 @@ create_host() {
 
     ensure_registry
 
-    if [ -d "$project_dir" ] || registry_has_host "$host"; then
+    if registry_has_host "$host"; then
         echo "Error: host '$host' already exists."
         print_status_hint
         echo "Hint: remove existing host with './hostctl.sh delete $host --yes' if needed."
         exit 1
+    fi
+
+    if [ -d "$project_dir" ]; then
+        echo "   ⚠️  Обнаружены частичные артефакты после предыдущего сбоя — выполняю автоочистку..."
+        runtime_host_down "$project_dir" >/dev/null 2>&1 || true
+        rm -rf "$project_dir" >/dev/null 2>&1 || true
+        registry_remove_host "$host"
+        bindings_registry_remove_host "$host"
+        core_registry_remove_by_owner_host "$host"
+        log_event "INFO" "create_auto_cleanup_partial host=$host"
     fi
 
     local mapped_preset
