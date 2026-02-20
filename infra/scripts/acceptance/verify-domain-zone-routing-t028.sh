@@ -17,8 +17,9 @@ FAIL=0
 PREFIX="f010rt$(date +%s)-$$"
 
 cleanup() {
-    [ -d "$PROJECTS_DIR/${PREFIX}a.loc" ] && "$HOSTCTL" delete "${PREFIX}a.loc" --yes 2>/dev/null || true
-    [ -d "$PROJECTS_DIR/${PREFIX}b.loc" ] && "$HOSTCTL" delete "${PREFIX}b.loc" --yes 2>/dev/null || true
+    local zone="${SUFFIX:-loc}"
+    [ -d "$PROJECTS_DIR/${PREFIX}a.$zone" ] && "$HOSTCTL" delete "${PREFIX}a.$zone" --yes 2>/dev/null || true
+    [ -d "$PROJECTS_DIR/${PREFIX}b.$zone" ] && "$HOSTCTL" delete "${PREFIX}b.$zone" --yes 2>/dev/null || true
 }
 trap cleanup EXIT
 
