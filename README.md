@@ -190,8 +190,7 @@ bash ./hostctl.sh logs-review
 ## Bitrix Multisite
 
 Поддержка kernel/ext_kernel/link: общее ядро, симлинки shared paths, guard при удалении core.  
-Runbook: `infra/docs/bitrix-multisite-runbook.md`  
-Автотест критичного пути: `infra/scripts/acceptance/verify-bitrix-critical-path.sh`
+Runbook: `infra/docs/bitrix-multisite-runbook.md`
 
 ## Карта документации
 

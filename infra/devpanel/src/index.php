@@ -1776,12 +1776,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             <div class="row">
                                 <div class="col-md-4 mb-3">
                                     <label class="form-label" id="projectNameLabel">Имя проекта (домен)</label>
-                                    <input type="text" class="form-control" name="project_name" 
-                                           id="projectNameInput"
-                                           placeholder="my-project.<?= htmlspecialchars($domainSuffix) ?>" required 
-                                           pattern="[a-z0-9\-\.]+" 
-                                           title="Короткое имя или полный домен в зоне <?= htmlspecialchars($domainSuffix) ?>"
-                                           data-domain-suffix="<?= htmlspecialchars($domainSuffix) ?>">
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" name="project_name" 
+                                               id="projectNameInput"
+                                               placeholder="my-project" required 
+                                               pattern="[a-z0-9\-\.]+" 
+                                               title="Короткое имя или полный домен в зоне <?= htmlspecialchars($domainSuffix) ?>"
+                                               data-domain-suffix="<?= htmlspecialchars($domainSuffix) ?>">
+                                        <span class="input-group-text" id="projectNameZoneAddon">.<?= htmlspecialchars($domainSuffix) ?></span>
+                                    </div>
                                 </div>
                                 <div class="col-md-3 mb-3">
                                     <label class="form-label">PHP версия</label>
@@ -1883,7 +1886,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     <h4 class="mb-1 d-flex align-items-center gap-1 flex-wrap">
                                         <i class="bi bi-folder-fill text-primary"></i>
                                         <?= htmlspecialchars($project['name']) ?>
+                                        <?php if (empty($metadata['bitrix_type']) || $metadata['bitrix_type'] !== 'ext_kernel'): ?>
                                         <a href="https://<?= htmlspecialchars($domain) ?>" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="Открыть сайт"><i class="bi bi-box-arrow-up-right"></i></a>
+                                        <?php endif; ?>
                                         <?php if ($domainSuffix && devpanel_is_legacy_host($project['name'], $domainSuffix)): ?>
                                             <span class="text-muted small" title="Хост вне активной зоны">(legacy)</span>
                                         <?php endif; ?>
@@ -2142,6 +2147,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             const preset = document.getElementById('presetSelect');
             const projectNameLabel = document.getElementById('projectNameLabel');
             const projectNameInput = document.getElementById('projectNameInput');
+            const projectNameZoneAddon = document.getElementById('projectNameZoneAddon');
             
             if (!bitrixType || !coreIdInput || !coreIdLabel || !coreIdHelp || !preset || !coreIdFieldWrapper) return;
 
@@ -2162,9 +2168,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 coreIdInput.value = ''; // Очищаем значение при скрытии
             }
 
-            // Обновляем label и placeholder для project_name в зависимости от типа Bitrix
-            // ext_kernel: core_id без доменной зоны (например core-main-shop)
-            // kernel/link: домен в активной зоне (my-project.pillat)
+            // Обновляем label, placeholder и зону для project_name в зависимости от типа Bitrix
+            // ext_kernel: core_id без доменной зоны (папка ядра)
+            // kernel/link: домен с зоной из конфига (инпут + статичный суффикс .pillat)
             if (projectNameLabel && projectNameInput) {
                 const suffix = projectNameInput.getAttribute('data-domain-suffix') || 'loc';
                 if (active && isExtKernel) {
@@ -2172,14 +2178,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     projectNameInput.placeholder = 'core-main-shop';
                     projectNameInput.pattern = '[a-z0-9][a-z0-9-]{1,62}';
                     projectNameInput.title = 'core_id: буквы, цифры, дефисы; 2–63 символа';
+                    if (projectNameZoneAddon) projectNameZoneAddon.style.display = 'none';
                     if (projectNameInput.value && projectNameInput.value.includes('.')) {
                         projectNameInput.value = '';
                     }
                 } else {
                     projectNameLabel.textContent = 'Имя проекта (домен)';
-                    projectNameInput.placeholder = 'my-project.' + suffix;
+                    projectNameInput.placeholder = 'my-project';
                     projectNameInput.pattern = '[a-z0-9\\-\\.]+';
                     projectNameInput.title = 'Короткое имя или полный домен в зоне ' + suffix;
+                    if (projectNameZoneAddon) projectNameZoneAddon.style.display = '';
                 }
             }
         }

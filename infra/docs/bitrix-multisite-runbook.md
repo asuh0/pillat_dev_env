@@ -41,8 +41,3 @@
 | Error[delete_guard] | Есть link-хосты | Удалите link перед core |
 | link_shared_paths_failed | Симлинки не созданы | Проверьте права, перезапустите create |
 
-## Автотест критичного пути
-
-```bash
-DOMAIN_SUFFIX=dev infra/scripts/acceptance/verify-bitrix-critical-path.sh
-```
