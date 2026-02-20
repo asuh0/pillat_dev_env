@@ -187,9 +187,16 @@ bash ./hostctl.sh logs-review
 
 Смена `DOMAIN_SUFFIX` допустима только при **пустом registry** (без хостов). Пошаговая процедура: `infra/docs/DOMAIN_SUFFIX-MIGRATION.md`.
 
+## Bitrix Multisite
+
+Поддержка kernel/ext_kernel/link: общее ядро, симлинки shared paths, guard при удалении core.  
+Runbook: `infra/docs/bitrix-multisite-runbook.md`  
+Автотест критичного пути: `infra/scripts/acceptance/verify-bitrix-critical-path.sh`
+
 ## Карта документации
 
 - `README.md` — основной вход.
+- `infra/docs/bitrix-multisite-runbook.md` — Bitrix multisite: типы, shared paths, troubleshooting.
 - `CONTRIBUTING.md` — правила вклада.
 - `LICENSE` — лицензия.
 - `kitty-specs/` — спецификации, планы, задачи и acceptance-артефакты.
