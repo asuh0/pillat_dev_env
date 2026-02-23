@@ -46,6 +46,13 @@ if [ -f "$DOMAIN_ZONE_HELPER" ]; then
     source "$DOMAIN_ZONE_HELPER"
 fi
 
+HOSTCTL_STATE_DIR="$STATE_DIR"
+DEV_TOOLS_LIB="$SCRIPT_DIR/dev-tools-lib.sh"
+if [ -f "$DEV_TOOLS_LIB" ]; then
+    # shellcheck source=/dev/null
+    source "$DEV_TOOLS_LIB"
+fi
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -57,6 +64,8 @@ Usage:
   hostctl.sh infra-restart
   hostctl.sh delete <host> [--yes]
   hostctl.sh status [--host <host>]
+  hostctl.sh enable-dev-tools <host> [--xdebug] [--adminer]
+  hostctl.sh disable-dev-tools <host> [--xdebug] [--adminer]
   hostctl.sh logs [--tail <lines>]
   hostctl.sh logs-review [--dry-run]
 
@@ -3291,6 +3300,104 @@ infra_restart() {
     log_event "INFO" "infra_restart_complete"
 }
 
+_parse_dev_tools_flags() {
+    local want_xdebug=""
+    local want_adminer=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --xdebug) want_xdebug=1; shift ;;
+            --adminer) want_adminer=1; shift ;;
+            *) break ;;
+        esac
+    done
+    # Default: both when no flags
+    if [ -z "$want_xdebug" ] && [ -z "$want_adminer" ]; then
+        want_xdebug=1
+        want_adminer=1
+    fi
+    echo "${want_xdebug:-} ${want_adminer:-}"
+}
+
+enable_dev_tools_host() {
+    local host="$1"
+    shift
+    local domain_suffix=""
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+    if ! host="$(canonicalize_host_name "$host" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+    local flags
+    flags="$(_parse_dev_tools_flags "$@")"
+    local want_xdebug="${flags%% *}"
+    local want_adminer="${flags##* }"
+
+    local project_dir="$PROJECTS_DIR/$host"
+    local compose_file="$project_dir/docker-compose.yml"
+    [ -f "$compose_file" ] || { echo "Error: проект $host не найден (нет docker-compose.yml)."; exit 1; }
+
+    if [ -n "$want_xdebug" ]; then
+        if python3 "$SCRIPT_DIR/patch-compose-xdebug.py" "$compose_file" enable 2>/dev/null; then
+            dev_tools_set "$host" "xdebug" "true"
+            echo "✅ Xdebug включён для $host"
+        else
+            echo "⚠️ Не удалось применить патч Xdebug для $host"
+        fi
+    fi
+    if [ -n "$want_adminer" ]; then
+        dev_tools_set "$host" "adminer" "true"
+        echo "✅ Adminer отмечен для $host (общий adminer в инфраструктуре)"
+    fi
+
+    if [ -n "$want_xdebug" ] && [ -f "$compose_file" ]; then
+        if runtime_host_compose "$project_dir" ps --status running -q php 2>/dev/null | grep -q .; then
+            echo "Перезапуск php-контейнера для применения Xdebug..."
+            runtime_host_compose "$project_dir" up -d --force-recreate php 2>/dev/null || true
+        fi
+    fi
+}
+
+disable_dev_tools_host() {
+    local host="$1"
+    shift
+    local domain_suffix=""
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+    if ! host="$(canonicalize_host_name "$host" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+    local flags
+    flags="$(_parse_dev_tools_flags "$@")"
+    local want_xdebug="${flags%% *}"
+    local want_adminer="${flags##* }"
+
+    local project_dir="$PROJECTS_DIR/$host"
+    local compose_file="$project_dir/docker-compose.yml"
+    [ -f "$compose_file" ] || { echo "Error: проект $host не найден (нет docker-compose.yml)."; exit 1; }
+
+    if [ -n "$want_xdebug" ]; then
+        if python3 "$SCRIPT_DIR/patch-compose-xdebug.py" "$compose_file" disable 2>/dev/null; then
+            dev_tools_set "$host" "xdebug" "false"
+            echo "✅ Xdebug отключён для $host"
+        else
+            echo "⚠️ Не удалось применить патч Xdebug для $host"
+        fi
+    fi
+    if [ -n "$want_adminer" ]; then
+        dev_tools_set "$host" "adminer" "false"
+        echo "✅ Adminer снят для $host"
+    fi
+
+    if [ -n "$want_xdebug" ] && [ -f "$compose_file" ]; then
+        if runtime_host_compose "$project_dir" ps --status running -q php 2>/dev/null | grep -q .; then
+            echo "Перезапуск php-контейнера для применения изменений..."
+            runtime_host_compose "$project_dir" up -d --force-recreate php 2>/dev/null || true
+        fi
+    fi
+}
+
 show_status() {
     local filter_host="${1:-}"
     local filter_input="$filter_host"
@@ -3353,13 +3460,29 @@ show_status() {
         fi
     fi
 
+    local product_version="-"
+    local update_available="-"
+    if [ -e "$DEV_DIR/.git" ]; then
+        product_version="$(git -C "$DEV_DIR" describe --tags --always --dirty 2>/dev/null || echo "-")"
+        if git -C "$DEV_DIR" fetch origin 2>/dev/null; then
+            if git -C "$DEV_DIR" status -sb 2>/dev/null | grep -q '\[.*behind'; then
+                update_available="yes"
+            else
+                update_available="no"
+            fi
+        fi
+    fi
+    [ -n "$product_version" ] || product_version="-"
+    echo "Product: $product_version | Update available: $update_available"
+    echo
+
     if [ "${#hosts[@]}" -eq 0 ]; then
         echo "No hosts found."
         exit 0
     fi
 
-    printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "HOST" "ZONE" "PRESET" "PHP" "DB" "BITRIX_TYPE" "CORE_ID" "STATUS" "CONTAINERS"
-    printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "--------------------------------" "-------" "----------" "-------" "----------" "------------" "--------------------" "----------" "----------"
+    printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s %-12s\n" "HOST" "ZONE" "PRESET" "PHP" "DB" "BITRIX_TYPE" "CORE_ID" "STATUS" "CONTAINERS" "DEV_TOOLS"
+    printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s %-12s\n" "--------------------------------" "-------" "----------" "-------" "----------" "------------" "--------------------" "----------" "----------" "------------"
 
     local running_count=0
     local stopped_count=0
@@ -3404,7 +3527,12 @@ show_status() {
             zone_marker="legacy"
         fi
 
-        printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s\n" "$host" "$zone_marker" "$preset" "$php_version" "$db_type" "$bitrix_type" "$core_id" "$status" "$containers"
+        local dev_tools_str="-"
+        if [ -f "$DEV_TOOLS_LIB" ]; then
+            dev_tools_str="$(dev_tools_format_for_status "$host")"
+        fi
+
+        printf "%-32s %-7s %-10s %-7s %-10s %-12s %-20s %-10s %-10s %-12s\n" "$host" "$zone_marker" "$preset" "$php_version" "$db_type" "$bitrix_type" "$core_id" "$status" "$containers" "$dev_tools_str"
     done
 
     echo
@@ -3823,6 +3951,14 @@ main() {
                 esac
             done
             show_status "$filter_host"
+            ;;
+        enable-dev-tools)
+            [ "$#" -ge 1 ] || { usage; exit 1; }
+            enable_dev_tools_host "$@"
+            ;;
+        disable-dev-tools)
+            [ "$#" -ge 1 ] || { usage; exit 1; }
+            disable_dev_tools_host "$@"
             ;;
         logs)
             show_logs "$@"
