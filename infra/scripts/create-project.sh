@@ -21,6 +21,20 @@ else
     TEMPLATES_DIR="${TEMPLATES_DIR:-$INFRA_DIR/templates}"
 fi
 
+# T022: Snapshot presets at create start (avoid race with update)
+PRESETS_SNAPSHOT_DIR=""
+if [ -d "$PRESETS_DIR" ] && [ -z "${PRESETS_SNAPSHOT_SKIP:-}" ] && [ -z "${PRESETS_SNAPSHOT_DIR:-}" ]; then
+    if snapshot_tmp="$(mktemp -d 2>/dev/null)" && cp -r "$PRESETS_DIR"/* "$snapshot_tmp/" 2>/dev/null; then
+        if [ -d "$snapshot_tmp/empty" ] || [ -d "$snapshot_tmp/bitrix" ]; then
+            PRESETS_SNAPSHOT_DIR="$snapshot_tmp"
+            PRESETS_DIR="$PRESETS_SNAPSHOT_DIR"
+            trap 'rm -rf "$PRESETS_SNAPSHOT_DIR"' EXIT
+        else
+            rm -rf "$snapshot_tmp"
+        fi
+    fi
+fi
+
 if [ -f "$DOMAIN_ZONE_HELPER" ]; then
     # shellcheck source=/dev/null
     source "$DOMAIN_ZONE_HELPER"
