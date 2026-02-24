@@ -802,8 +802,16 @@ rewrite_compose_paths_for_daemon() {
                 print "      context: \"" host_project_dir "\""
                 next
             }
+            if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\/www:\/opt\/www[[:space:]]*$/) {
+                print "      - \"" host_project_dir "/www:/opt/www\""
+                next
+            }
             if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\/src:\/opt\/www[[:space:]]*$/) {
                 print "      - \"" host_project_dir "/src:/opt/www\""
+                next
+            }
+            if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\/www:\/opt\/www:ro[[:space:]]*$/) {
+                print "      - \"" host_project_dir "/www:/opt/www:ro\""
                 next
             }
             if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\/src:\/opt\/www:ro[[:space:]]*$/) {
@@ -814,12 +822,21 @@ rewrite_compose_paths_for_daemon() {
                 print "      - \"" host_project_dir "/nginx/site.conf:/etc/nginx/conf.d/default.conf:ro\""
                 next
             }
+            if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\/logs\/php:\/var\/log\/php[[:space:]]*$/) {
+                print "      - \"" host_project_dir "/logs/php:/var/log/php\""
+                next
+            }
+            if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\/logs\/nginx:\/var\/log\/nginx[[:space:]]*$/) {
+                print "      - \"" host_project_dir "/logs/nginx:/var/log/nginx\""
+                next
+            }
+            # Обратная совместимость: старый формат ../../logs/php/<host>
             if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\.\/\.\.\/logs\/php\/[^:]+:\/var\/log\/php[[:space:]]*$/) {
-                print "      - \"" host_logs_dir "/php/" host ":/var/log/php\""
+                print "      - \"" host_project_dir "/logs/php:/var/log/php\""
                 next
             }
             if ($0 ~ /^[[:space:]]*-[[:space:]]*\.\.\/\.\.\/logs\/nginx\/[^:]+:\/var\/log\/nginx[[:space:]]*$/) {
-                print "      - \"" host_logs_dir "/nginx/" host ":/var/log/nginx\""
+                print "      - \"" host_project_dir "/logs/nginx:/var/log/nginx\""
                 next
             }
             if ($0 ~ /^[[:space:]]*device:[[:space:]]*\$\{PWD\}\/db-mysql[[:space:]]*$/) {
@@ -925,8 +942,8 @@ PY
 prepare_link_shared_paths() {
     local core_host="$1"
     local link_host="$2"
-    local core_src="$PROJECTS_DIR/$core_host/src"
-    local link_src="$PROJECTS_DIR/$link_host/src"
+    local core_src="$PROJECTS_DIR/$core_host/www"
+    local link_src="$PROJECTS_DIR/$link_host/www"
     local shared_paths=(bitrix upload images)
     local created_symlinks=()
     local path=""
@@ -1062,7 +1079,7 @@ is_bitrix_project() {
     local project_dir="$1"
     [ -d "$project_dir" ] || return 1
 
-    if [ -d "$project_dir/src/bitrix" ]; then
+    if [ -d "$project_dir/www/bitrix" ]; then
         return 0
     fi
 
@@ -1861,10 +1878,11 @@ runtime_host_compose() {
                         }
 
                         # Поддержка файлов, где остались контейнерные абсолютные пути от старых запусков.
+                        gsub(/\/projects\/[^"[:space:]]+\/www/, host_project_dir "/www")
                         gsub(/\/projects\/[^"[:space:]]+\/src/, host_project_dir "/src")
                         gsub(/\/projects\/[^"[:space:]]+\/nginx\/site\.conf/, host_project_dir "/nginx/site.conf")
-                        gsub(/\/logs\/php/, host_logs_dir "/php")
-                        gsub(/\/logs\/nginx/, host_logs_dir "/nginx")
+                        gsub(/\/projects\/[^"[:space:]]+\/logs\/php/, host_project_dir "/logs/php")
+                        gsub(/\/projects\/[^"[:space:]]+\/logs\/nginx/, host_project_dir "/logs/nginx")
 
                         print
                     }
@@ -3656,24 +3674,28 @@ collect_log_inventory() {
     local host=""
     local protected="0"
 
-    for log_dir in "$DEV_DIR"/logs/php/*; do
+    for project_dir in "$PROJECTS_DIR"/*/; do
+        [ -d "$project_dir" ] || continue
+        host="$(basename "$project_dir")"
+        log_dir="$project_dir/logs/php"
         [ -d "$log_dir" ] || continue
-        host="$(basename "$log_dir")"
         protected="0"
         if host_is_running "$host"; then
             protected="1"
         fi
-        append_log_inventory_entry "$inventory_file" "project_php_logs" "$log_dir" "dir" "$protected" "Каталог PHP логов проекта."
+        append_log_inventory_entry "$inventory_file" "project_php_logs" "$log_dir" "dir" "$protected" "Каталог PHP логов проекта $host."
     done
 
-    for log_dir in "$DEV_DIR"/logs/nginx/*; do
+    for project_dir in "$PROJECTS_DIR"/*/; do
+        [ -d "$project_dir" ] || continue
+        host="$(basename "$project_dir")"
+        log_dir="$project_dir/logs/nginx"
         [ -d "$log_dir" ] || continue
-        host="$(basename "$log_dir")"
         protected="0"
         if host_is_running "$host"; then
             protected="1"
         fi
-        append_log_inventory_entry "$inventory_file" "project_nginx_logs" "$log_dir" "dir" "$protected" "Каталог Nginx логов проекта."
+        append_log_inventory_entry "$inventory_file" "project_nginx_logs" "$log_dir" "dir" "$protected" "Каталог Nginx логов проекта $host."
     done
 
     for log_dir in "$DEV_DIR"/logs/db/*; do

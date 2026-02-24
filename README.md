@@ -22,8 +22,8 @@
 │   ├── ssl/
 │   └── grafana/
 ├── presets/                  # пресеты и контракт пресетов
-├── projects/                 # только каталоги реальных хостов
-├── logs/                     # централизованные runtime-логи (не коммитятся)
+├── projects/                 # каталоги хостов (каждый: www/, logs/, nginx/)
+├── logs/                     # логи инфраструктуры (traefik; логи проектов — в projects/*/logs/)
 ├── shared-volumes/           # данные сервисов (не коммитятся)
 ├── kitty-specs/              # спецификации и артефакты фич
 ├── CONTRIBUTING.md
@@ -151,6 +151,26 @@ bash ./hostctl.sh logs --tail 200
   - помощь по `/etc/hosts`.
 
 ## Политика состояния и логов
+
+### Логи проектов (относительные пути)
+
+Логи каждого хоста хранятся **внутри папки проекта** — относительные пути, без дублирования структуры:
+
+```
+projects/<host>/
+├── www/
+├── logs/
+│   ├── php/      # PHP, Xdebug
+│   └── nginx/   # access.log, error.log
+├── nginx/
+└── docker-compose.yml
+```
+
+- Пути в compose: `./logs/php`, `./logs/nginx` — относительны проекту.
+- Promtail собирает логи из `projects/*/logs/php/*.log` и `projects/*/logs/nginx/*.log`.
+- Логи инфраструктуры (Traefik): `logs/traefik/` в корне workspace.
+
+### Служебные артефакты
 
 Служебные runtime-артефакты вынесены в `infra/state/`:
 

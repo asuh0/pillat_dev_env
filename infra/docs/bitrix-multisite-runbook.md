@@ -11,8 +11,8 @@
 ## Shared vs site-specific пути
 
 Для `link`-хостов:
-- **Shared** (симлинки на core): `src/bitrix`, `src/upload`, `src/images`
-- **Site-specific**: `src/local` — своя директория у каждого link
+- **Shared** (симлинки на core): `www/bitrix`, `www/upload`, `www/images`
+- **Site-specific**: `www/local` — своя директория у каждого link
 
 ## Создание
 

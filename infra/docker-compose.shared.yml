@@ -100,6 +100,7 @@ services:
     volumes:
       - ./promtail-config.yml:/etc/promtail/config.yml:ro
       - ../logs:/logs:ro
+      - ../projects:/projects:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - infra_proxy
@@ -145,6 +146,7 @@ services:
       - ./devpanel/src:/var/www/html:ro
       - ../projects:/projects
       - ./state:/state
+      - ./ssl:/ssl:rw
       - ./scripts:/scripts:ro
       - ./templates:/templates:ro
       - ../presets:/presets:ro

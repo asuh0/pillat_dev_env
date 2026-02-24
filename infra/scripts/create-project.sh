@@ -276,12 +276,23 @@ echo "   🔌 DB внешний порт: $DB_EXTERNAL_PORT_VALUE"
 echo "   📋 Пресет: $PRESET"
 
 # Создание структуры директорий
-mkdir -p "$PROJECT_DIR"/{src,nginx,.devcontainer}
+mkdir -p "$PROJECT_DIR"/{www,nginx,.devcontainer,logs/php,logs/nginx}
 if [ "$DB_TYPE" = "mysql" ]; then
     mkdir -p "$PROJECT_DIR/db-mysql"
 elif [ "$DB_TYPE" = "postgres" ]; then
     mkdir -p "$PROJECT_DIR/db-postgres"
 fi
+
+# .gitignore в папке проекта (сразу при создании)
+cat > "$PROJECT_DIR/.gitignore" <<EOF
+.env
+db-${DB_TYPE}/
+www/vendor/
+www/node_modules/
+logs/
+*.log
+
+EOF
 
 # Создание docker-compose.yml
 cat > "$PROJECT_DIR/docker-compose.yml" <<EOF
@@ -307,8 +318,8 @@ services:
         PHP_VERSION: ${PHP_VERSION}
     container_name: ${PROJECT_NAME//./-}-php
     volumes:
-      - ./src:/opt/www
-      - ../../logs/php/${PROJECT_NAME}:/var/log/php
+      - ./www:/opt/www
+      - ./logs/php:/var/log/php
     environment:
       - PHP_IDE_CONFIG=serverName=${PROJECT_NAME}
       - XDEBUG_CONFIG=client_host=host.docker.internal
@@ -322,9 +333,9 @@ services:
     image: nginx:alpine
     container_name: ${PROJECT_NAME//./-}-nginx
     volumes:
-      - ./src:/opt/www:ro
+      - ./www:/opt/www:ro
       - ./nginx/site.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../../logs/nginx/${PROJECT_NAME}:/var/log/nginx
+      - ./logs/nginx:/var/log/nginx
     depends_on:
       - php
     networks:
@@ -539,22 +550,12 @@ cat > "$PROJECT_DIR/.devcontainer/.vscode/launch.json" <<EOF
       "request": "launch",
       "port": 9003,
       "pathMappings": {
-        "/opt/www": "\${workspaceFolder}/src"
+        "/opt/www": "\${workspaceFolder}/www"
       },
       "log": true
     }
   ]
 }
-
-EOF
-
-# Создание .gitignore
-cat > "$PROJECT_DIR/.gitignore" <<EOF
-.env
-db-${DB_TYPE}/
-src/vendor/
-src/node_modules/
-*.log
 
 EOF
 
@@ -621,8 +622,8 @@ for tpl in "$PRESET_DIR"/*.template "$PRESET_DIR"/.*.template; do
     base="$(basename "$tpl" .template)"
     case "$base" in
         .settings.php)
-            mkdir -p "$PROJECT_DIR/src/bitrix"
-            out="$PROJECT_DIR/src/bitrix/.settings.php"
+            mkdir -p "$PROJECT_DIR/www/bitrix"
+            out="$PROJECT_DIR/www/bitrix/.settings.php"
             ;;
         nginx.conf)
             out="$PROJECT_DIR/nginx/site.conf"
@@ -683,7 +684,7 @@ EOF
 # Стартовый индекс в зависимости от пресета
 case "$PRESET" in
   bitrix)
-    cat > "$PROJECT_DIR/src/index.php" <<'EOF'
+    cat > "$PROJECT_DIR/www/index.php" <<'EOF'
 <?php
 $hasSetup = file_exists(__DIR__ . '/bitrixsetup.php');
 $hasRestore = file_exists(__DIR__ . '/restore.php');
@@ -740,7 +741,7 @@ $hasRestore = file_exists(__DIR__ . '/restore.php');
         <ul>
             <li>Домен прописан в <code>/etc/hosts</code>.</li>
             <li>Контейнеры хоста запущены через <code>hostctl.sh start &lt;host&gt;</code>.</li>
-            <li>Параметры БД в <code>src/bitrix/.settings.php</code> актуальны для этого хоста.</li>
+            <li>Параметры БД в <code>www/bitrix/.settings.php</code> актуальны для этого хоста.</li>
         </ul>
     </div>
 </body>
@@ -748,7 +749,7 @@ $hasRestore = file_exists(__DIR__ . '/restore.php');
 EOF
     ;;
   empty|*)
-    cat > "$PROJECT_DIR/src/index.php" <<'EOF'
+    cat > "$PROJECT_DIR/www/index.php" <<'EOF'
 <?php
 if (isset($_GET['phpinfo']) && $_GET['phpinfo'] === '1') {
     phpinfo();
@@ -776,7 +777,7 @@ if (isset($_GET['phpinfo']) && $_GET['phpinfo'] === '1') {
 
         <h3>Следующие шаги</h3>
         <ul>
-            <li>Добавьте код проекта в директорию <code>src/</code>.</li>
+            <li>Добавьте код проекта в директорию <code>www/</code>.</li>
             <li>Установите зависимости вашего приложения (composer/npm).</li>
             <li>Проверьте состояние контейнеров: <code>./hostctl.sh status --host &lt;host&gt;</code>.</li>
         </ul>

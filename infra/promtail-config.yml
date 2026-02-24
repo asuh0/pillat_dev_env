@@ -23,7 +23,7 @@ scrape_configs:
           - localhost
         labels:
           job: php
-          __path__: /logs/php/**/*.log
+          __path__: /projects/*/logs/php/*.log
 
   - job_name: nginx
     static_configs:
@@ -31,7 +31,7 @@ scrape_configs:
           - localhost
         labels:
           job: nginx
-          __path__: /logs/nginx/**/*.log
+          __path__: /projects/*/logs/nginx/*.log
 
   - job_name: mysql
     static_configs:

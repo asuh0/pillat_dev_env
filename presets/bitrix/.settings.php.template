@@ -1,7 +1,7 @@
 <?php
 /**
  * Шаблон настроек Битрикс. Переменные подставляются при создании проекта.
- * Итоговый файл: src/bitrix/.settings.php
+ * Итоговый файл: www/bitrix/.settings.php
  */
 return [
     'utf_mode' => true,
