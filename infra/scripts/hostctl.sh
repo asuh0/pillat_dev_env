@@ -66,6 +66,7 @@ Usage:
   hostctl.sh status [--host <host>]
   hostctl.sh enable-dev-tools <host> [--xdebug] [--adminer]
   hostctl.sh disable-dev-tools <host> [--xdebug] [--adminer]
+  hostctl.sh update-component-adminer
   hostctl.sh update-presets
   hostctl.sh logs [--tail <lines>]
   hostctl.sh logs-review [--dry-run]
@@ -3960,6 +3961,9 @@ main() {
         disable-dev-tools)
             [ "$#" -ge 1 ] || { usage; exit 1; }
             disable_dev_tools_host "$@"
+            ;;
+        update-component-adminer)
+            "$SCRIPT_DIR/update-component-adminer.sh" "$@"
             ;;
         update-presets)
             "$SCRIPT_DIR/update-presets.sh" "$@"
