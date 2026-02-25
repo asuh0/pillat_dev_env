@@ -229,8 +229,10 @@ EOF
 PRESET="$(normalize_preset "$PRESET_RAW")"
 PRESET_DIR="$PRESETS_DIR/$PRESET"
 OPCACHE_REVALIDATE_FREQ="2"
+DISPLAY_ERRORS="On"
 if [ "$PRESET" = "bitrix" ]; then
     OPCACHE_REVALIDATE_FREQ="0"
+    DISPLAY_ERRORS="Off"
 fi
 
 PROJECT_DIR="$PROJECTS_DIR/$PROJECT_NAME"
@@ -460,7 +462,7 @@ upload_max_filesize = 64M
 post_max_size = 64M
 max_execution_time = 300
 date.timezone = Europe/Moscow
-display_errors = On
+display_errors = ${DISPLAY_ERRORS}
 max_input_vars = 10000
 
 [opcache]

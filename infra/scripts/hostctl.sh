@@ -1194,6 +1194,14 @@ else:
         text += "\n"
     text += "\nopcache.revalidate_freq=0\n"
 
+display_errors_re = re.compile(r"^\s*display_errors\s*=.*$", re.M | re.I)
+if display_errors_re.search(text):
+    text = display_errors_re.sub("display_errors = Off", text)
+else:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "\ndisplay_errors = Off\n"
+
 if text != original:
     php_ini_path.write_text(text, encoding="utf-8")
     print(1)
@@ -2850,7 +2858,7 @@ EOF
         echo "   ℹ️  Применены базовые PHP-настройки: display_errors=On, max_input_vars=10000 для '$host'."
     fi
     if [ "${patched_bitrix_php_ini:-0}" -gt 0 ]; then
-        echo "   ℹ️  Применен Bitrix-тюнинг PHP: opcache.revalidate_freq=0 для '$host'."
+        echo "   ℹ️  Применен Bitrix-тюнинг PHP: opcache.revalidate_freq=0, display_errors=Off для '$host'."
         rebuild_php_for_bitrix="1"
     fi
     if [ "${patched_nginx_php_upstream:-0}" -gt 0 ]; then
@@ -3172,7 +3180,7 @@ start_host() {
         rebuild_php_for_bitrix="1"
     fi
     if [ "${patched_bitrix_php_ini:-0}" -gt 0 ]; then
-        echo "   ℹ️  Применен Bitrix-тюнинг PHP: opcache.revalidate_freq=0 для '$host'."
+        echo "   ℹ️  Применен Bitrix-тюнинг PHP: opcache.revalidate_freq=0, display_errors=Off для '$host'."
         rebuild_php_for_bitrix="1"
     fi
     if [ "${patched_nginx_php_upstream:-0}" -gt 0 ]; then
