@@ -688,6 +688,37 @@ maybe_delegate_to_fallback_runtime() {
     return $?
 }
 
+# Собирает занятые порты БД из всех проектов (registry + .env) и возвращает следующий свободный.
+allocate_next_db_port() {
+    local db_type="$1"
+    local base_port="3306"
+    [ "$db_type" = "postgres" ] && base_port="5432"
+    local port_step=1
+    local used_ports=""
+    local project_dir=""
+    local env_file=""
+    local p=""
+
+    for project_dir in "$PROJECTS_DIR"/*/; do
+        [ -d "$project_dir" ] || continue
+        env_file="$project_dir/.env"
+        [ -f "$env_file" ] || env_file="$project_dir/.env.example"
+        [ -f "$env_file" ] || continue
+        p="$(env_get_key "$env_file" "DB_EXTERNAL_PORT")"
+        [ -n "$p" ] && [ "$p" -eq "$p" ] 2>/dev/null && used_ports="$used_ports $p"
+    done
+
+    p="$base_port"
+    while true; do
+        if ! echo " $used_ports " | grep -q " $p "; then
+            echo "$p"
+            return 0
+        fi
+        p=$((p + port_step))
+        [ "$p" -le 65535 ] || { echo "$base_port"; return 1; }
+    done
+}
+
 set_compose_db_external_port() {
     local compose_file="$1"
     local db_type="$2"
@@ -2512,8 +2543,11 @@ create_host() {
         db_root_password="root"
     fi
     if [ -z "$db_external_port" ]; then
-        db_external_port="3306"
-        [ "$db_type" = "postgres" ] && db_external_port="5432"
+        db_external_port="$(allocate_next_db_port "$db_type")"
+        [ -n "$db_external_port" ] || {
+            db_external_port="3306"
+            [ "$db_type" = "postgres" ] && db_external_port="5432"
+        }
     fi
 
     if [ "$interactive_mode" = "auto" ]; then
