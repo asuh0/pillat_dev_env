@@ -58,3 +58,5 @@ kitty-specs/
 # Локальный onboarding-контекст для ИИ-агентов
 LOCAL_AI_CONTEXT.md
 AGENTS.md
+docs/tasks/
+BACKLOG.md

@@ -2766,6 +2766,18 @@ EOF
                 fail_with_code "link_shared_paths_failed" "Не удалось подготовить симлинки shared paths для link-хоста."
                 exit 1
             fi
+
+            # Link подключается к БД core — патчим .settings.php: host => db-<core_slug>
+            local core_slug=""
+            core_slug="$(echo "$core_owner_host" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//' | cut -c1-48)"
+            [ -n "$core_slug" ] || core_slug="${core_owner_host//./-}"
+            local core_db_service="db-$core_slug"
+            local settings_file="$project_dir/www/bitrix/.settings.php"
+            if [ -f "$settings_file" ]; then
+                if sed "s/'host' => '[^']*'/'host' => '$core_db_service'/g" "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"; then
+                    log_event "INFO" "link_settings_db_host_patched host=$host core_db=$core_db_service"
+                fi
+            fi
         elif [ "$bitrix_type" = "ext_kernel" ]; then
             if ! apply_ext_kernel_http_restriction "$project_dir/docker-compose.yml"; then
                 cleanup_failed_host_create "$host" "$project_dir"

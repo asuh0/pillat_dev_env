@@ -7,8 +7,6 @@
 - пресеты проектов (`empty`, `bitrix`);
 - централизованная политика структуры, состояния и логов.
 
-![Repository layout](docs/images/repository-layout.svg)
-
 ## Ключевая структура
 
 ```text
