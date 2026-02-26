@@ -1,10 +1,11 @@
 #!/bin/bash
 # Установочный скрипт пресета Bitrix (идемпотентный).
-# Вызывается из create-project.sh с параметрами: PROJECT_DIR, PROJECT_NAME, DB_TYPE, DB_HOST, DB_NAME, DB_USER, DB_PASSWORD
+# Вызывается из create-project.sh с параметрами: PROJECT_DIR, PROJECT_NAME, DB_TYPE, DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, [BITRIX_TYPE]
 set -e
 
 PROJECT_DIR="${1:-.}"
 SRC_DIR="$PROJECT_DIR/www"
+BITRIX_TYPE="${8:-}"
 
 RESTORE_URL="https://www.1c-bitrix.ru/download/files/scripts/restore.php"
 BITRIXSETUP_URL="https://www.1c-bitrix.ru/download/files/scripts/bitrixsetup.php"
@@ -42,16 +43,21 @@ mkdir -p "$SRC_DIR"/{upload,bitrix/cache,bitrix/managed_cache,bitrix/backup}
 chmod -R 775 "$SRC_DIR/upload" "$SRC_DIR/bitrix/cache" "$SRC_DIR/bitrix/managed_cache" "$SRC_DIR/bitrix/backup" 2>/dev/null || true
 echo "Bitrix preset: directories upload, bitrix/cache, bitrix/managed_cache, bitrix/backup created."
 
-if download_script "$RESTORE_URL" "$SRC_DIR/restore.php"; then
-    echo "Bitrix preset: restore.php downloaded to www/restore.php."
-else
-    echo "Bitrix preset: warning - failed to download restore.php."
-    echo "Manual download: $RESTORE_URL"
-fi
+# ext_kernel — голое ядро без установщика и restore; скрипты не нужны
+if [ "$(echo "${BITRIX_TYPE}" | tr '[:upper:]' '[:lower:]')" != "ext_kernel" ]; then
+    if download_script "$RESTORE_URL" "$SRC_DIR/restore.php"; then
+        echo "Bitrix preset: restore.php downloaded to www/restore.php."
+    else
+        echo "Bitrix preset: warning - failed to download restore.php."
+        echo "Manual download: $RESTORE_URL"
+    fi
 
-if download_script "$BITRIXSETUP_URL" "$SRC_DIR/bitrixsetup.php"; then
-    echo "Bitrix preset: bitrixsetup.php downloaded to www/bitrixsetup.php."
+    if download_script "$BITRIXSETUP_URL" "$SRC_DIR/bitrixsetup.php"; then
+        echo "Bitrix preset: bitrixsetup.php downloaded to www/bitrixsetup.php."
+    else
+        echo "Bitrix preset: warning - failed to download bitrixsetup.php."
+        echo "Manual download: $BITRIXSETUP_URL"
+    fi
 else
-    echo "Bitrix preset: warning - failed to download bitrixsetup.php."
-    echo "Manual download: $BITRIXSETUP_URL"
+    echo "Bitrix preset: ext_kernel — restore.php и bitrixsetup.php не загружаются."
 fi

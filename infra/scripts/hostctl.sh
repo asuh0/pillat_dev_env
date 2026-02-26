@@ -70,6 +70,7 @@ Usage:
   hostctl.sh update-presets
   hostctl.sh logs [--tail <lines>]
   hostctl.sh logs-review [--dry-run]
+  hostctl.sh link-db-host <link_host>
 
 Notes:
   create <host> in interactive terminal automatically starts dialog mode
@@ -159,6 +160,13 @@ canonicalize_host_name() {
         return 0
     fi
 
+    # Многоуровневый без суффикса
+    if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+)$ ]] && [[ "$normalized" != *".${domain_suffix}" ]]; then
+        echo "${normalized}.${domain_suffix}"
+        return 0
+    fi
+
+    # Один уровень: name.suffix
     if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62})\.([a-z0-9][a-z0-9-]{0,30})$ ]]; then
         host_label="${BASH_REMATCH[1]}"
         host_suffix="${BASH_REMATCH[2]}"
@@ -178,8 +186,49 @@ canonicalize_host_name() {
         return 0
     fi
 
-    fail_with_code "invalid_host" "Некорректное имя хоста '$raw_host'. Допустимо: '<name>' или '<name>.$domain_suffix', где name соответствует [a-z0-9-]."
+
+    if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+\.([a-z0-9][a-z0-9-]{0,30}))$ ]]; then
+        host_label="${BASH_REMATCH[1]%.*}"
+        host_suffix="${normalized##*.}"
+
+        if [ "$host_suffix" = "$domain_suffix" ]; then
+            echo "$normalized"
+            return 0
+        fi
+
+        if [ "$mode" = "create" ]; then
+            fail_with_code "foreign_suffix" "Хост '$raw_host' использует суффикс '$host_suffix'. Активный суффикс: '$domain_suffix'. Используйте '<sub>.<name>.$domain_suffix'."
+            return 1
+        fi
+
+        echo "$normalized"
+        return 0
+    fi
+
+    fail_with_code "invalid_host" "Некорректное имя хоста '$raw_host'. Допустимо: '<name>', '<name>.$domain_suffix' или '<sub>.<name>.$domain_suffix'."
     return 1
+}
+
+# Преобразует канонический хост (например shintyre.pillat) в фактическое имя директории проекта.
+# Если проект создан без суффикса (shintyre), возвращает короткое имя для корректного пути.
+resolve_host_to_project_dir() {
+    local host="$1"
+    local domain_suffix="$2"
+    if [ -d "$PROJECTS_DIR/$host" ]; then
+        echo "$host"
+        return 0
+    fi
+    local short="${host%%.*}"
+    if [ -n "$short" ] && [ "$short" != "$host" ] && [ -d "$PROJECTS_DIR/$short" ]; then
+        local can=""
+        can="$(canonicalize_host_name "$short" "$domain_suffix" "existing" 2>/dev/null)" || true
+        if [ "$can" = "$host" ]; then
+            echo "$short"
+            return 0
+        fi
+    fi
+    echo "$host"
+    return 0
 }
 
 # T025: Legacy host = domain with suffix different from active zone. Informational marker only.
@@ -965,6 +1014,110 @@ compose_path.write_text(updated, encoding="utf-8")
 PY
 }
 
+# Добавляет в compose монтирование php.ini проекта, если его ещё нет (чтобы error_log и правки применялись).
+ensure_php_ini_mount_in_compose() {
+    local compose_file="$1"
+    local project_dir="$2"
+    [ -f "$compose_file" ] || return 0
+    [ -f "$project_dir/php.ini" ] || return 0
+    require_python3 optional "ensure_php_ini_mount_in_compose" || return 0
+
+    python3 - "$compose_file" <<'PY'
+import pathlib
+import re
+import sys
+
+compose_path = pathlib.Path(sys.argv[1])
+text = compose_path.read_text(encoding="utf-8")
+if "custom.ini" in text or ("php.ini" in text and "conf.d" in text):
+    sys.exit(0)  # already has mount
+
+# After " - ./logs/php:/var/log/php" add " - ./php.ini:/usr/local/etc/php/conf.d/custom.ini"
+pattern = r'(-\s+["\']?\./logs/php:/var/log/php["\']?\s*\n)'
+replacement = r'\1      - ./php.ini:/usr/local/etc/php/conf.d/custom.ini\n'
+new_text, n = re.subn(pattern, replacement, text, count=1)
+if n:
+    compose_path.write_text(new_text, encoding="utf-8")
+    print(1)
+else:
+    print(0)
+PY
+}
+
+# Добавляет монтирование php-fpm-error-log.conf, если в compose его ещё нет (для старых проектов).
+ensure_php_fpm_error_log_conf_in_compose() {
+    local compose_file="$1"
+    local project_dir="$2"
+    [ -f "$compose_file" ] || return 0
+    [ -f "$project_dir/php-fpm-error-log.conf" ] || return 0
+    grep -q "zz-project-error-log.conf" "$compose_file" 2>/dev/null && return 0
+    require_python3 optional "ensure_php_fpm_error_log_conf_in_compose" || return 0
+
+    python3 - "$compose_file" <<'PY'
+import pathlib
+import re
+import sys
+
+compose_path = pathlib.Path(sys.argv[1])
+text = compose_path.read_text(encoding="utf-8")
+if "zz-project-error-log.conf" in text:
+    sys.exit(0)
+# After custom.ini line add the fpm conf mount if not present
+pattern = r'(\./php\.ini:/usr/local/etc/php/conf\.d/custom\.ini["\']?\s*\n)'
+replacement = r'\1      - ./php-fpm-error-log.conf:/usr/local/etc/php-fpm.d/zz-project-error-log.conf:ro\n'
+new_text, n = re.subn(pattern, replacement, text, count=1)
+if n:
+    compose_path.write_text(new_text, encoding="utf-8")
+    print(1)
+else:
+    print(0)
+PY
+}
+
+# Добавляет volume mounts core в link-хост, чтобы контейнер видел bitrix/upload/images
+# (симлинки на хосте не работают в Docker — target вне mount)
+inject_link_core_volumes() {
+    local compose_file="$1"
+    local core_owner_host="$2"
+    [ -f "$compose_file" ] || return 0
+    require_python3 required "inject_link_core_volumes" || return 1
+
+    python3 - "$compose_file" "$core_owner_host" <<'PY'
+import pathlib
+import re
+import sys
+
+compose_path = pathlib.Path(sys.argv[1])
+core_owner_host = sys.argv[2]
+core_prefix = f"../{core_owner_host}/www"
+shared_paths = ["bitrix", "upload", "images"]
+
+text = compose_path.read_text(encoding="utf-8")
+# Идемпотентность: уже есть core mounts — не добавлять
+if "/opt/www/bitrix" in text:
+    sys.exit(0)
+
+lines = text.splitlines()
+result = []
+i = 0
+
+while i < len(lines):
+    line = lines[i]
+    result.append(line)
+    # После "- ./www:/opt/www" или "- .../www:/opt/www:ro" добавляем core mounts
+    if re.search(r'-\s+["\']?[^"\']*www["\']?\s*:\s*/opt/www', line) and 'bitrix' not in line:
+        indent = len(line) - len(line.lstrip())
+        pad = " " * indent
+        is_ro = ":ro" in line
+        suffix = ":ro" if is_ro else ""
+        for p in shared_paths:
+            result.append(f'{pad}- "{core_prefix}/{p}:/opt/www/{p}{suffix}"')
+    i += 1
+
+compose_path.write_text("\n".join(result) + "\n", encoding="utf-8")
+PY
+}
+
 # Bitrix multisite path map (T019):
 #   Shared paths (symlinks link->core): bitrix, upload, images
 #   Site-specific (own dir per link):   local
@@ -1208,6 +1361,28 @@ if text != original:
 else:
     print(0)
 PY
+}
+
+# Если Dockerfile проекта не содержит mysqli (Bitrix restore.php требует), копирует шаблон.
+# Возвращает 1 если обновили и нужна пересборка, 0 иначе.
+ensure_dockerfile_has_mysqli() {
+    local project_dir="$1"
+    local dockerfile=""
+    local template=""
+    for f in "$project_dir"/Dockerfile.php*; do
+        [ -f "$f" ] || continue
+        dockerfile="$f"
+        break
+    done
+    [ -n "$dockerfile" ] || return 0
+    grep -q "mysqli" "$dockerfile" 2>/dev/null && return 0
+    local base
+    base="$(basename "$dockerfile")"
+    template="$INFRA_DIR/templates/php/$base"
+    [ -f "$template" ] || return 0
+    grep -q "mysqli" "$template" 2>/dev/null || return 0
+    cp "$template" "$dockerfile"
+    return 1
 }
 
 build_project_php_upstream() {
@@ -1723,6 +1898,26 @@ core_registry_has_id() {
     awk -F'\t' -v core_id="$core_id" '$1 == core_id {found=1} END {exit !found}' "$BITRIX_CORE_REGISTRY_FILE"
 }
 
+# Для link: разрешает core_ref в фактический core_id (поддержка host/alias)
+resolve_core_id_for_link() {
+    local core_ref="$1"
+    local owned=""
+    if core_registry_has_id "$core_ref"; then
+        echo "$core_ref"
+        return 0
+    fi
+    owned="$(core_registry_get_by_owner_host "$core_ref" 2>/dev/null)"
+    if [ -n "$owned" ]; then
+        echo "${owned%%|*}"
+        return 0
+    fi
+    if core_registry_has_id "core-$core_ref"; then
+        echo "core-$core_ref"
+        return 0
+    fi
+    return 1
+}
+
 core_registry_get_field() {
     local core_id="$1"
     local field="$2"
@@ -1754,6 +1949,46 @@ core_registry_upsert() {
 
     core_registry_remove_core_id "$core_id"
     printf "%s\t%s\t%s\t%s\n" "$core_id" "$owner_host" "$core_type" "$created_at" >> "$BITRIX_CORE_REGISTRY_FILE"
+}
+
+# Возвращает фактическую директорию проекта core: сначала core_owner_host, затем короткое имя без зоны
+resolve_core_project_dir() {
+    local core_owner_host="$1"
+    if [ -d "$PROJECTS_DIR/$core_owner_host" ]; then
+        echo "$core_owner_host"
+        return 0
+    fi
+    local short="${core_owner_host%%.*}"
+    if [ -n "$short" ] && [ "$short" != "$core_owner_host" ] && [ -d "$PROJECTS_DIR/$short" ]; then
+        echo "$short"
+        return 0
+    fi
+    echo "$core_owner_host"
+    return 0
+}
+
+# Читает имя контейнера БД из docker-compose.yml ядра (источник истины), иначе — по имени хоста
+get_core_db_container_name() {
+    local core_owner_host="$1"
+    local db_type="${2:-mysql}"
+    local core_dir=""
+    core_dir="$(resolve_core_project_dir "$core_owner_host")"
+    local compose_file="$PROJECTS_DIR/$core_dir/docker-compose.yml"
+    local container=""
+    if [ -f "$compose_file" ]; then
+        if [ "$db_type" = "postgres" ]; then
+            container="$(grep -oE 'container_name:[[:space:]]*[^[:space:]]+-postgres' "$compose_file" 2>/dev/null | sed -n 's/container_name:[[:space:]]*//p' | head -1)"
+        else
+            container="$(grep -oE 'container_name:[[:space:]]*[^[:space:]]+-mysql' "$compose_file" 2>/dev/null | sed -n 's/container_name:[[:space:]]*//p' | head -1)"
+        fi
+    fi
+    if [ -n "$container" ]; then
+        echo "$container"
+        return 0
+    fi
+    container="${core_owner_host//./-}-mysql"
+    [ "$db_type" = "postgres" ] && container="${core_owner_host//./-}-postgres"
+    echo "$container"
 }
 
 bindings_registry_get_core_id_for_host() {
@@ -2233,7 +2468,12 @@ ensure_infra_env_file_notice() {
 
 host_status_summary() {
     local host="$1"
-    local project_dir="$PROJECTS_DIR/$host"
+    local domain_suffix="${2:-}"
+    local project_dir_name="$host"
+    if [ -n "$domain_suffix" ]; then
+        project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    fi
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
     local compose_file="$project_dir/docker-compose.yml"
 
     if [ ! -f "$compose_file" ]; then
@@ -2387,8 +2627,36 @@ create_host() {
         exit 1
     fi
 
-    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "create")"; then
-        exit 1
+    # Предварительный разбор --preset и --bitrix-type для ext_kernel: не добавлять доменный суффикс
+    local pre_preset="empty"
+    local pre_bitrix_raw=""
+    local prev=""
+    for arg in "$@"; do
+        if [ "$prev" = "--preset" ]; then pre_preset="$arg"; prev=""; continue; fi
+        if [ "$prev" = "--bitrix-type" ]; then pre_bitrix_raw="$arg"; prev=""; continue; fi
+        if [ "$arg" = "--preset" ] || [ "$arg" = "--bitrix-type" ]; then prev="$arg"; continue; fi
+        prev=""
+    done
+
+    local pre_bitrix_lower=""
+    pre_bitrix_lower="$(echo "${pre_bitrix_raw}" | tr '[:upper:]' '[:lower:]')"
+    local is_ext_kernel=0
+    [ "$pre_preset" = "bitrix" ] && [ "$pre_bitrix_lower" = "ext_kernel" ] && is_ext_kernel=1
+
+    if [ "$is_ext_kernel" -eq 1 ]; then
+        local normalized=""
+        normalized="$(normalize_token "$host_input")"
+        if [[ "$normalized" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]]; then
+            host="$normalized"
+        else
+            if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "create")"; then
+                exit 1
+            fi
+        fi
+    else
+        if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "create")"; then
+            exit 1
+        fi
     fi
 
     local php_version="8.2"
@@ -2720,14 +2988,16 @@ create_host() {
         lock_acquired=1
 
         if [ "$bitrix_type" = "link" ]; then
-            if ! core_registry_has_id "$core_ref"; then
+            local resolved_core_id=""
+            if ! resolved_core_id="$(resolve_core_id_for_link "$core_ref")"; then
                 release_bindings_lock
                 lock_acquired=0
-                fail_with_code "invalid_core" "core_id '$core_ref' не найден."
+                fail_with_code "invalid_core" "core_id '$core_ref' не найден. Укажите core_id из реестра или host владельца core."
                 exit 1
             fi
+            core_id="$resolved_core_id"
 
-            core_owner_host="$(core_registry_get_field "$core_ref" 2)"
+            core_owner_host="$(core_registry_get_field "$core_id" 2)"
             if [ -z "$core_owner_host" ] || [ ! -d "$PROJECTS_DIR/$core_owner_host" ]; then
                 release_bindings_lock
                 lock_acquired=0
@@ -2809,15 +3079,20 @@ EOF
                 exit 1
             fi
 
-            # Link подключается к БД core — патчим .settings.php: host => db-<core_slug>
-            local core_slug=""
-            core_slug="$(echo "$core_owner_host" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//' | cut -c1-48)"
-            [ -n "$core_slug" ] || core_slug="${core_owner_host//./-}"
-            local core_db_service="db-$core_slug"
+            if ! inject_link_core_volumes "$project_dir/docker-compose.yml" "$core_owner_host"; then
+                cleanup_failed_host_create "$host" "$project_dir"
+                [ "$lock_acquired" -eq 1 ] && release_bindings_lock
+                fail_with_code "link_volumes_failed" "Не удалось добавить volume mounts core в link-хост."
+                exit 1
+            fi
+
+            # Link подключается к БД core. Имя контейнера берём из docker-compose.yml ядра (без подстановки суффикса зоны).
+            local core_db_container=""
+            core_db_container="$(get_core_db_container_name "$core_owner_host" "$db_type")"
             local settings_file="$project_dir/www/bitrix/.settings.php"
             if [ -f "$settings_file" ]; then
-                if sed "s/'host' => '[^']*'/'host' => '$core_db_service'/g" "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"; then
-                    log_event "INFO" "link_settings_db_host_patched host=$host core_db=$core_db_service"
+                if sed "s/'host' => '[^']*'/'host' => '$core_db_container'/g" "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"; then
+                    log_event "INFO" "link_settings_db_host_patched host=$host core_db_container=$core_db_container"
                 fi
             fi
         elif [ "$bitrix_type" = "ext_kernel" ]; then
@@ -2994,7 +3269,9 @@ delete_host() {
 
     ensure_registry
 
-    local project_dir="$PROJECTS_DIR/$host"
+    local project_dir_name=""
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
     local exists=0
     if [ -d "$project_dir" ] || registry_has_host "$host"; then
         exists=1
@@ -3131,7 +3408,9 @@ start_host() {
 
     ensure_registry
 
-    local project_dir="$PROJECTS_DIR/$host"
+    local project_dir_name=""
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
     local compose_file="$project_dir/docker-compose.yml"
     if [ ! -d "$project_dir" ] && ! registry_has_host "$host"; then
         echo "Error: host '$host' not found."
@@ -3143,6 +3422,46 @@ start_host() {
         echo "Error: compose file not found for host '$host': $compose_file"
         echo "Hint: recreate host with './hostctl.sh create $host --preset empty' or restore docker-compose.yml."
         exit 1
+    fi
+
+    ensure_php_ini_mount_in_compose "$compose_file" "$project_dir" || true
+    ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
+
+    # Если Dockerfile без mysqli (Bitrix restore.php требует) — подменить шаблоном и пересобрать.
+    local need_rebuild_mysqli="0"
+    if ! ensure_dockerfile_has_mysqli "$project_dir"; then
+        need_rebuild_mysqli="1"
+    fi
+
+    # Чтобы PHP мог писать в error.log: файл и каталог должны существовать и быть доступны для записи из контейнера (www-data).
+    mkdir -p "$project_dir/logs/php"
+    touch "$project_dir/logs/php/error.log"
+    chmod 666 "$project_dir/logs/php/error.log" 2>/dev/null || true
+    chmod 777 "$project_dir/logs/php" 2>/dev/null || true
+
+    # Для старых проектов: создать php-fpm-error-log.conf, чтобы FPM писал ошибки в файл (пул переопределяет php.ini).
+    if [ ! -f "$project_dir/php-fpm-error-log.conf" ]; then
+        cat > "$project_dir/php-fpm-error-log.conf" <<'FPMEOF'
+[www]
+php_admin_value[error_log] = /var/log/php/error.log
+php_admin_flag[log_errors] = on
+FPMEOF
+        ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
+    fi
+
+    # Link-хост: добавить volume mounts core (bitrix/upload/images) для restore.php и т.п.
+    local link_core_id=""
+    local link_core_owner=""
+    link_core_id="$(bindings_registry_get_core_id_for_host "$host" 2>/dev/null)"
+    if [ -n "$link_core_id" ]; then
+        link_core_owner="$(core_registry_get_field "$link_core_id" 2)"
+        if [ -n "$link_core_owner" ]; then
+            local core_dir_for_volumes=""
+            core_dir_for_volumes="$(resolve_host_to_project_dir "$link_core_owner" "$domain_suffix")"
+            if [ -d "$PROJECTS_DIR/$core_dir_for_volumes" ]; then
+                inject_link_core_volumes "$compose_file" "$core_dir_for_volumes" 2>/dev/null || true
+            fi
+        fi
     fi
 
     if ! rewrite_compose_paths_for_daemon "$project_dir" "$host"; then
@@ -3192,6 +3511,7 @@ start_host() {
     if [ "${patched_mysql_innodb_strict_mode:-0}" -gt 0 ]; then
         echo "   ℹ️  Для MySQL включен совместимый режим Bitrix: innodb_strict_mode=OFF в '$host'."
     fi
+    [ "$need_rebuild_mysqli" = "1" ] && rebuild_php_for_bitrix="1"
     local removed_metadata_files_post_patch="0"
     removed_metadata_files_post_patch="$(remove_appledouble_files "$project_dir")"
     clear_project_xattrs "$project_dir"
@@ -3254,7 +3574,9 @@ stop_host() {
 
     ensure_registry
 
-    local project_dir="$PROJECTS_DIR/$host"
+    local project_dir_name=""
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
     local compose_file="$project_dir/docker-compose.yml"
     if [ ! -d "$project_dir" ] && ! registry_has_host "$host"; then
         echo "Error: host '$host' not found."
@@ -3407,7 +3729,9 @@ enable_dev_tools_host() {
     local want_xdebug="${flags%% *}"
     local want_adminer="${flags##* }"
 
-    local project_dir="$PROJECTS_DIR/$host"
+    local project_dir_name=""
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
     local compose_file="$project_dir/docker-compose.yml"
     [ -f "$compose_file" ] || { echo "Error: проект $host не найден (нет docker-compose.yml)."; exit 1; }
 
@@ -3447,7 +3771,9 @@ disable_dev_tools_host() {
     local want_xdebug="${flags%% *}"
     local want_adminer="${flags##* }"
 
-    local project_dir="$PROJECTS_DIR/$host"
+    local project_dir_name=""
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
     local compose_file="$project_dir/docker-compose.yml"
     [ -f "$compose_file" ] || { echo "Error: проект $host не найден (нет docker-compose.yml)."; exit 1; }
 
@@ -3470,6 +3796,53 @@ disable_dev_tools_host() {
             runtime_host_compose "$project_dir" up -d --force-recreate php 2>/dev/null || true
         fi
     fi
+}
+
+# Для link-хоста выводит хост БД (имя контейнера core) для .settings.php
+show_link_db_host() {
+    local link_host="$1"
+    local domain_suffix=""
+    local core_id=""
+    local core_owner_host=""
+    local db_type="mysql"
+    local core_db_container=""
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+    if ! link_host="$(canonicalize_host_name "$link_host" "$domain_suffix" "existing")"; then
+        echo "Error: host '$1' not found."
+        exit 1
+    fi
+
+    core_id="$(bindings_registry_get_core_id_for_host "$link_host" 2>/dev/null)"
+    if [ -z "$core_id" ]; then
+        echo "Error: '$link_host' не является link-хостом (нет привязки к core)."
+        exit 1
+    fi
+    core_owner_host="$(core_registry_get_field "$core_id" 2)"
+    if [ -z "$core_owner_host" ]; then
+        echo "Error: core '$core_id' не найден в реестре."
+        exit 1
+    fi
+    local core_dir=""
+    core_dir="$(resolve_core_project_dir "$core_owner_host")"
+    if [ ! -d "$PROJECTS_DIR/$core_dir" ]; then
+        echo "Error: каталог core не найден: $PROJECTS_DIR/$core_owner_host и $PROJECTS_DIR/$core_dir"
+        exit 1
+    fi
+
+    db_type="$(registry_get_field "$core_dir" 4)"
+    [ -n "$db_type" ] || db_type="$(registry_get_field "$core_owner_host" 4)"
+    [ -n "$db_type" ] || db_type="mysql"
+    core_db_container="$(get_core_db_container_name "$core_owner_host" "$db_type")"
+
+    echo "Link: $link_host  →  Core: $core_dir  (БД: $db_type, контейнер: $core_db_container)"
+    echo ""
+    echo "В projects/$link_host/www/bitrix/.settings.php укажите хост БД:"
+    echo "  'host' => '$core_db_container'"
+    echo ""
+    echo "Не используйте db-<slug> — в сети Docker контейнеры видны по имени контейнера."
 }
 
 show_status() {
@@ -3586,7 +3959,7 @@ show_status() {
         bitrix_type="${bitrix_profile%%|*}"
         core_id="${bitrix_profile##*|}"
 
-        status_info="$(host_status_summary "$host")"
+        status_info="$(host_status_summary "$host" "$domain_suffix")"
         status="${status_info%%|*}"
         containers="${status_info##*|}"
 
@@ -3706,7 +4079,7 @@ host_is_running() {
     [ -n "$host" ] || return 1
     [ -d "$PROJECTS_DIR/$host" ] || return 1
     local status_info=""
-    status_info="$(host_status_summary "$host" 2>/dev/null || true)"
+    status_info="$(host_status_summary "$host" "$domain_suffix" 2>/dev/null || true)"
     [ "${status_info%%|*}" = "running" ]
 }
 
@@ -4049,6 +4422,10 @@ main() {
             ;;
         logs-review|log-review)
             review_logs_dialog "$@"
+            ;;
+        link-db-host)
+            [ "$#" -ge 1 ] || { echo "Usage: hostctl.sh link-db-host <link_host>"; exit 1; }
+            show_link_db_host "$1"
             ;;
         help|-h|--help)
             usage

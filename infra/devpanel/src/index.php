@@ -237,6 +237,10 @@ function devpanel_canonicalize_host($input, $suffix, $mode = 'existing') {
     if (preg_match('/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i', $normalized) && strlen($normalized) <= 63) {
         return ['canonical' => $normalized . '.' . $suffix, 'error' => null];
     }
+    // Многоуровневый без суффикса
+    if (preg_match('/^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+$/i', $normalized) && substr($normalized, -strlen('.' . $suffix)) !== '.' . $suffix) {
+        return ['canonical' => $normalized . '.' . $suffix, 'error' => null];
+    }
     if (preg_match('/^([a-z0-9][a-z0-9-]{0,62})\.([a-z0-9][a-z0-9-]{0,30})$/i', $normalized, $m)) {
         $hostLabel = $m[1];
         $hostSuffix = strtolower($m[2]);
@@ -248,7 +252,18 @@ function devpanel_canonicalize_host($input, $suffix, $mode = 'existing') {
         }
         return ['canonical' => $hostLabel . '.' . $hostSuffix, 'error' => null];
     }
-    return ['canonical' => null, 'error' => "Некорректное имя хоста '$input'. Допустимо: <name> или <name>.$suffix"];
+
+    if (preg_match('/^([a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+\.([a-z0-9][a-z0-9-]{0,30}))$/i', $normalized, $m)) {
+        $hostSuffix = strtolower($m[3]);
+        if ($hostSuffix === $suffix) {
+            return ['canonical' => $normalized, 'error' => null];
+        }
+        if ($mode === 'create') {
+            return ['canonical' => null, 'error' => "Хост '$input' использует суффикс '$hostSuffix'. Разрешена только активная зона '$suffix'."];
+        }
+        return ['canonical' => $normalized, 'error' => null];
+    }
+    return ['canonical' => null, 'error' => "Некорректное имя хоста '$input'. Допустимо: <name>, <name>.$suffix или <sub>.<name>.$suffix"];
 }
 
 $domainZone = devpanel_resolve_domain_suffix();
@@ -841,7 +856,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 $projectName = $canon['canonical'];
             }
-
+            
             if (!empty($projectName) && preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
                 if (file_exists($hostctlScript)) {
                     $cmdParts = [
@@ -1033,7 +1048,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         } else {
                             error_log("DevPanel: proc_open failed, falling back to exec");
                             // Fallback на exec если proc_open не сработал
-                            exec($cmd, $output, $return);
+                    exec($cmd, $output, $return);
                             $fullOutput = implode("\n", $output);
                         }
                     } catch (Exception $e) {
@@ -1240,7 +1255,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     } elseif ($errorKind === 'foreign_suffix') {
                         $message = 'Хост использует суффикс, отличный от активной зоны. Введите короткое имя или домен в формате <name>.' . $domainSuffix . ' (см. DOMAIN_SUFFIX в infra/.env.global)';
                     } elseif ($errorKind === 'invalid_host') {
-                        $message = 'Некорректное имя хоста. Допустимо: короткое имя или полный домен в формате <name>.' . $domainSuffix;
+                        $message = 'Некорректное имя хоста. Допустимо: короткое имя, <name>.' . $domainSuffix . ' или <sub>.<name>.' . $domainSuffix . ' (домены 2+ уровней)';
                     } elseif ($errorKind === 'infra') {
                         $message = 'Ошибка инфраструктуры Docker при создании хоста. Проверьте доступ Docker и настройки shared paths.';
                     } else {
@@ -1292,7 +1307,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $projectName = trim($_POST['project_name'] ?? '');
             if (!empty($projectName) && preg_match('/^[a-z0-9\-\.]+$/i', $projectName) && file_exists($hostctlScript)) {
                 $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' delete ' . escapeshellarg($projectName) . ' --yes 2>&1';
-                $output = [];
+                    $output = [];
                 exec($cmd, $output, $return);
                 $outputHead = array_slice($output, 0, 15);
                 $outputText = implode("\n", $outputHead);
@@ -1400,6 +1415,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             break;
 
     }
+}
+
+// AJAX-запросы ожидают JSON; при ошибке в create/delete и т.п. actionResult установлен, но break без exit — возвращаем JSON
+if ($actionResult !== null && $isAjax && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-cache, must-revalidate');
+    }
+    echo json_encode($actionResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
 }
 
 // Если GET запрос для логов
@@ -1595,7 +1620,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 <i class="bi bi-folder"></i>
                 <span><?= $projTotal === 0 ? '0' : ($projRun . '/' . $projTotal) ?></span>
             </a>
-        </div>
+    </div>
     </header>
     <div class="layout-wrapper">
         <aside class="sidebar" id="sidebar">
@@ -1678,7 +1703,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                 <div class="d-flex align-items-center justify-content-between mb-2">
                                     <h6 class="card-title mb-0"><i class="bi <?= $meta['icon'] ?> text-<?= $meta['color'] ?>"></i> <?= htmlspecialchars($s['name']) ?></h6>
                                     <span class="badge bg-<?= $isUp ? 'success' : 'secondary' ?>"><?= htmlspecialchars($s['status']) ?></span>
-                                </div>
+                        </div>
                                 <p class="text-muted small mb-2"><?= htmlspecialchars($meta['desc']) ?></p>
                                 <?php if ($key === 'devpanel'): ?>
                                 <a href="<?= htmlspecialchars($url) ?>" class="btn btn-sm btn-outline-<?= $meta['color'] ?> w-100"><i class="bi bi-arrow-clockwise"></i> Обновить</a>
@@ -1687,14 +1712,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                 <?php else: ?>
                                 <span class="btn btn-sm btn-outline-secondary w-100 disabled opacity-75" style="pointer-events:none" title="Сервис остановлен"><i class="bi bi-box-arrow-up-right"></i> Открыть</span>
                                 <?php endif; ?>
-                            </div>
+                    </div>
                         </div>
                     </div>
                     <?php endforeach; ?>
-                </div>
+                        </div>
                 <?php endif; ?>
-            </div>
-        </div>
+                    </div>
+                        </div>
         <?php elseif ($currentPage === 'hosts'): ?>
         <!-- Страница: Hosts -->
         <div class="row">
@@ -1711,11 +1736,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             <button class="btn btn-sm btn-outline-primary" onclick="copyHostsConfig()">
                                 <i class="bi bi-clipboard"></i> Копировать конфиг
                             </button>
-                        </div>
+                </div>
                         <?php if ($hostsCompare !== null): ?>
                         <div class="mb-3">
                             <strong>Сравнение с вашим hosts:</strong> отсутствующие записи подсвечены <span class="text-danger">красным</span>, присутствующие — <span class="text-success">зелёным</span>.
-                        </div>
+            </div>
                         <pre class="bg-light p-3 rounded border" id="hostsConfig" style="max-height: 400px; overflow-y: auto;"><code># Docker Development Infrastructure
 <?php foreach ($hostsCompare as $item): ?><span class="text-<?= $item['present'] ? 'success' : 'danger' ?>">127.0.0.1  <?= htmlspecialchars($item['domain']) ?></span>
 <?php endforeach; ?></code></pre>
@@ -1777,10 +1802,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                 <div class="col-md-4 mb-3">
                                     <label class="form-label" id="projectNameLabel">Имя проекта (домен)</label>
                                     <div class="input-group">
-                                        <input type="text" class="form-control" name="project_name" 
+                                    <input type="text" class="form-control" name="project_name" 
                                                id="projectNameInput"
                                                placeholder="my-project" required 
-                                               pattern="[a-z0-9\-\.]+" 
+                                           pattern="[a-z0-9\-\.]+" 
                                                title="Короткое имя или полный домен в зоне <?= htmlspecialchars($domainSuffix) ?>"
                                                data-domain-suffix="<?= htmlspecialchars($domainSuffix) ?>">
                                         <span class="input-group-text" id="projectNameZoneAddon">.<?= htmlspecialchars($domainSuffix) ?></span>
@@ -1827,7 +1852,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                         <option value="ext_kernel">ext_kernel (core, без HTTP)</option>
                                         <option value="link">link (привязка к core)</option>
                                     </select>
-                                </div>
+                    </div>
                                 <div class="col-md-5 mb-3" id="coreIdFieldWrapper" style="display:none;">
                                     <label class="form-label" id="coreIdLabel">Core ID</label>
                                     <input type="text"
@@ -1839,9 +1864,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                            title="Только a-z, 0-9, дефис; длина 2..63">
                                     <div class="form-text" id="coreIdHelp">
                                         Укажите существующий core_id, к которому будет привязан link-хост.
-                                    </div>
-                                </div>
-                            </div>
+                </div>
+            </div>
+        </div>
                         </form>
                     </div>
                 </div>
@@ -1884,7 +1909,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             <div class="d-flex justify-content-between align-items-start mb-2">
                                 <div class="flex-grow-1">
                                     <h4 class="mb-1 d-flex align-items-center gap-1 flex-wrap">
-                                        <i class="bi bi-folder-fill text-primary"></i>
+                                        <i class="bi bi-folder-fill text-primary"></i> 
                                         <?= htmlspecialchars($project['name']) ?>
                                         <?php if (empty($metadata['bitrix_type']) || $metadata['bitrix_type'] !== 'ext_kernel'): ?>
                                         <a href="https://<?= htmlspecialchars($domain) ?>" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="Открыть сайт"><i class="bi bi-box-arrow-up-right"></i></a>
@@ -1921,12 +1946,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     <div class="p-2 text-muted" style="font-size: 0.85rem; font-weight: normal;">
                                         <?php if (!empty($metadata['db_host'])): ?>
                                             <span>Хост БД: <?= htmlspecialchars($metadata['db_host']) ?></span>
-                                        <?php endif; ?>
+                                            <?php endif; ?>
                                         <?php if ($deleteBlocked): ?>
                                             <div class="alert alert-warning py-2 mb-2 mt-2">
                                                 <i class="bi bi-shield-exclamation"></i>
                                                 Удаление этого core-хоста заблокировано: активные link-хосты <?= htmlspecialchars(implode(', ', $linkedHosts)) ?>.
-                                            </div>
+                                        </div>
                                         <?php endif; ?>
                                         <?php if (!empty($metadata['env'])): ?>
                                             <div class="mt-2">
@@ -2081,13 +2106,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     <div class="modal-footer">
                                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
                                         <?php if (!$deleteBlocked): ?>
-                                            <form method="POST" action="" style="display: inline;">
-                                                <input type="hidden" name="action" value="delete">
-                                                <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
-                                                <button type="submit" class="btn btn-danger">
-                                                    <i class="bi bi-trash"></i> Удалить
-                                                </button>
-                                            </form>
+                                        <form method="POST" action="" style="display: inline;">
+                                            <input type="hidden" name="action" value="delete">
+                                            <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
+                                            <button type="submit" class="btn btn-danger">
+                                                <i class="bi bi-trash"></i> Удалить
+                                            </button>
+                                        </form>
                                         <?php endif; ?>
                                     </div>
                                 </div>
@@ -2184,9 +2209,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     }
                 } else {
                     projectNameLabel.textContent = 'Имя проекта (домен)';
-                    projectNameInput.placeholder = 'my-project';
+                    projectNameInput.placeholder = 'my-project или test.my-project.' + suffix;
                     projectNameInput.pattern = '[a-z0-9\\-\\.]+';
-                    projectNameInput.title = 'Короткое имя или полный домен в зоне ' + suffix;
+                    projectNameInput.title = 'Короткое имя, <name>.' + suffix + ' или <sub>.<name>.' + suffix + ' (домены 2+ уровней)';
                     if (projectNameZoneAddon) projectNameZoneAddon.style.display = '';
                 }
             }

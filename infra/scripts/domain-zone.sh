@@ -84,6 +84,13 @@ dz_canonicalize_host() {
         return 0
     fi
 
+    # Многоуровневый без суффикса
+    if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+)$ ]] && [[ "$normalized" != *".${domain_suffix}" ]]; then
+        echo "${normalized}.${domain_suffix}"
+        return 0
+    fi
+
+    # Один уровень: name.suffix
     if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62})\.([a-z0-9][a-z0-9-]{0,30})$ ]]; then
         host_label="${BASH_REMATCH[1]}"
         host_suffix="${BASH_REMATCH[2]}"
@@ -103,6 +110,24 @@ dz_canonicalize_host() {
         return 0
     fi
 
-    echo "Error: invalid host '$raw_host'. Allowed format: '<name>' or '<name>.$domain_suffix'." >&2
+
+    if [[ "$normalized" =~ ^([a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+\.([a-z0-9][a-z0-9-]{0,30}))$ ]]; then
+        host_suffix="${normalized##*.}"
+
+        if [ "$host_suffix" = "$domain_suffix" ]; then
+            echo "$normalized"
+            return 0
+        fi
+
+        if [ "$mode" = "create" ]; then
+            echo "Error: host '$raw_host' uses foreign suffix '$host_suffix'. Active suffix is '$domain_suffix'." >&2
+            return 2
+        fi
+
+        echo "$normalized"
+        return 0
+    fi
+
+    echo "Error: invalid host '$raw_host'. Allowed format: '<name>', '<name>.$domain_suffix' or '<sub>.<name>.$domain_suffix'." >&2
     return 3
 }

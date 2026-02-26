@@ -10,9 +10,12 @@ RUN apk add --no-cache \
     freetype-dev \
     oniguruma-dev \
     libzip-dev \
+    mysql-client \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j$(nproc) \
         gd \
+        mysqli \
+        pdo_mysql \
         zip \
         mbstring \
         opcache

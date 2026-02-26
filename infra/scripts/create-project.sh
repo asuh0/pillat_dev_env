@@ -279,6 +279,9 @@ echo "   📋 Пресет: $PRESET"
 
 # Создание структуры директорий
 mkdir -p "$PROJECT_DIR"/{www,nginx,.devcontainer,logs/php,logs/nginx}
+touch "$PROJECT_DIR/logs/php/error.log"
+chmod 666 "$PROJECT_DIR/logs/php/error.log" 2>/dev/null || true
+chmod 777 "$PROJECT_DIR/logs/php" 2>/dev/null || true
 if [ "$DB_TYPE" = "mysql" ]; then
     mkdir -p "$PROJECT_DIR/db-mysql"
 elif [ "$DB_TYPE" = "postgres" ]; then
@@ -319,9 +322,12 @@ services:
       args:
         PHP_VERSION: ${PHP_VERSION}
     container_name: ${PROJECT_NAME//./-}-php
+    env_file: .env
     volumes:
       - ./www:/opt/www
       - ./logs/php:/var/log/php
+      - ./php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./php-fpm-error-log.conf:/usr/local/etc/php-fpm.d/zz-project-error-log.conf:ro
     environment:
       - PHP_IDE_CONFIG=serverName=${PROJECT_NAME}
       - XDEBUG_CONFIG=client_host=host.docker.internal
@@ -463,6 +469,8 @@ post_max_size = 64M
 max_execution_time = 300
 date.timezone = Europe/Moscow
 display_errors = ${DISPLAY_ERRORS}
+log_errors = On
+error_log = /var/log/php/error.log
 max_input_vars = 10000
 
 [opcache]
@@ -485,6 +493,13 @@ xdebug.log=/var/log/php/xdebug.log
 xdebug.idekey=PHPSTORM
 
 EOF
+
+# PHP-FPM: принудительно писать ошибки в файл (пул по умолчанию переопределяет php.ini)
+cat > "$PROJECT_DIR/php-fpm-error-log.conf" <<'FPMEOF'
+[www]
+php_admin_value[error_log] = /var/log/php/error.log
+php_admin_flag[log_errors] = on
+FPMEOF
 
 # Создание nginx конфигурации
 cat > "$PROJECT_DIR/nginx/site.conf" <<EOF
@@ -608,11 +623,11 @@ EOF
     fi
 fi
 
-# Выполнение install.sh пресета
+# Выполнение install.sh пресета (BITRIX_TYPE передаётся для bitrix-пресета)
 if [ -x "$PRESET_DIR/install.sh" ]; then
-    "$PRESET_DIR/install.sh" "$PROJECT_DIR" "$PROJECT_NAME" "$DB_TYPE" "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" || true
+    "$PRESET_DIR/install.sh" "$PROJECT_DIR" "$PROJECT_NAME" "$DB_TYPE" "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" "${BITRIX_TYPE:-}" || true
 elif [ -f "$PRESET_DIR/install.sh" ]; then
-    bash "$PRESET_DIR/install.sh" "$PROJECT_DIR" "$PROJECT_NAME" "$DB_TYPE" "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" || true
+    bash "$PRESET_DIR/install.sh" "$PROJECT_DIR" "$PROJECT_NAME" "$DB_TYPE" "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" "${BITRIX_TYPE:-}" || true
 fi
 
 # Генерация конфигов из шаблонов (*.template).

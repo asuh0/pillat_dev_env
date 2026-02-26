@@ -77,6 +77,17 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
 
+  memcached:
+    image: memcached:alpine
+    container_name: memcached
+    restart: unless-stopped
+    networks:
+      - infra_proxy
+    labels:
+      - "traefik.enable=false"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
   loki:
     image: grafana/loki:latest
     container_name: loki
