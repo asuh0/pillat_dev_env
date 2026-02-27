@@ -1,8 +1,9 @@
 ARG PHP_VERSION=8.4
 FROM php:${PHP_VERSION}-fpm-alpine
 
-# Установка зависимостей
+# Установка зависимостей (PHPIZE_DEPS нужен для pecl/сборки расширений)
 RUN apk add --no-cache \
+    $PHPIZE_DEPS \
     git \
     curl \
     libpng-dev \
@@ -25,9 +26,10 @@ RUN apk add --no-cache \
         intl \
         bcmath
 
-# Установка Xdebug
-RUN pecl install xdebug \
-    && docker-php-ext-enable xdebug
+# Установка Xdebug (совместимый вариант для разных версий PHP): apk (Alpine), при отсутствии — pecl; при сбое образ без xdebug
+RUN apk add --no-cache php84-pecl-xdebug 2>/dev/null \
+    || ( pecl install xdebug-3.4.2 || pecl install xdebug ) \
+    && docker-php-ext-enable xdebug || true
 
 # Установка Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer

@@ -62,6 +62,7 @@ Usage:
   hostctl.sh infra-start
   hostctl.sh infra-stop
   hostctl.sh infra-restart
+  hostctl.sh set-php <host> <version>
   hostctl.sh delete <host> [--yes]
   hostctl.sh status [--host <host>]
   hostctl.sh enable-dev-tools <host> [--xdebug] [--adminer]
@@ -91,6 +92,7 @@ Examples:
   hostctl.sh infra-stop
   hostctl.sh infra-restart
   hostctl.sh create sandbox --preset empty
+  hostctl.sh set-php my-project 8.4
   hostctl.sh delete my-project.<zone> --yes
   hostctl.sh status
   hostctl.sh logs --tail 200
@@ -3603,6 +3605,117 @@ stop_host() {
     log_event "INFO" "stop_host_complete host=$host"
 }
 
+# Переключение версии PHP у существующего проекта (012-php-version-switching).
+set_php_host() {
+    local host_input="$1"
+    local version_input="${2:-}"
+    local host=""
+    local domain_suffix=""
+    local project_dir_name=""
+    local project_dir=""
+    local compose_file=""
+    local php_suffix=""
+    local template_file=""
+    local was_running=0
+    local preset="" db_type="" created_at="" bitrix_type="" core_id=""
+
+    if [ -z "$version_input" ]; then
+        echo "Usage: hostctl.sh set-php <host> <version>"
+        echo "  version: 8.1, 8.2, 8.3 или 8.4"
+        usage
+        exit 1
+    fi
+
+    # Валидация версии до разрешения хоста (чтобы сразу сообщать о неподдерживаемой версии).
+    case "$version_input" in
+        8.1) php_suffix="81" ;;
+        8.2) php_suffix="82" ;;
+        8.3) php_suffix="83" ;;
+        8.4) php_suffix="84" ;;
+        *)
+            echo "Error: неподдерживаемая версия PHP: $version_input"
+            echo "Доступные версии: 8.1 8.2 8.3 8.4"
+            exit 1
+            ;;
+    esac
+
+    template_file="$INFRA_DIR/templates/php/Dockerfile.php$php_suffix"
+    if [ ! -f "$template_file" ]; then
+        echo "Error: шаблон для PHP $version_input не найден: $template_file"
+        printf "Доступные: "
+        for ver in 8.1 8.2 8.3 8.4; do
+            s="${ver//./}"
+            [ -f "$INFRA_DIR/templates/php/Dockerfile.php$s" ] && printf "%s " "$ver"
+        done
+        echo ""
+        exit 1
+    fi
+
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    project_dir="$PROJECTS_DIR/$project_dir_name"
+    compose_file="$project_dir/docker-compose.yml"
+
+    if [ ! -f "$compose_file" ]; then
+        echo "Error: хост '$host' не найден или не содержит docker-compose.yml: $compose_file"
+        print_status_hint
+        exit 1
+    fi
+
+    if runtime_host_compose "$project_dir" ps --status running -q php 2>/dev/null | grep -q .; then
+        was_running=1
+    fi
+
+    echo "🔄 Переключение PHP хоста '$project_dir_name' на $version_input..."
+
+    if ! sed -i.bak -E "s/Dockerfile\.php(81|82|83|84)/Dockerfile.php$php_suffix/" "$compose_file"; then
+        echo "Error: не удалось обновить docker-compose.yml"
+        exit 1
+    fi
+    # Обновить build args PHP_VERSION в compose (иначе переопределит ARG из Dockerfile и будет собираться не та версия)
+    sed -i.bak -E "s/(PHP_VERSION:[[:space:]]*)(8\.[1-4])/\1$version_input/" "$compose_file" 2>/dev/null || true
+    rm -f "$compose_file.bak"
+
+    cp "$template_file" "$project_dir/Dockerfile.php$php_suffix"
+
+    if ! runtime_host_compose "$project_dir" build php; then
+        echo "Error: не удалось пересобрать образ PHP для '$project_dir_name'."
+        exit 1
+    fi
+
+    if [ "$was_running" -eq 1 ]; then
+        if ! runtime_host_compose "$project_dir" up -d php; then
+            echo "Error: не удалось перезапустить контейнер php для '$project_dir_name'."
+            exit 1
+        fi
+        echo "   Контейнер php перезапущен."
+    fi
+
+    preset="$(registry_get_field "$host" 2)"
+    db_type="$(registry_get_field "$host" 4)"
+    created_at="$(registry_get_field "$host" 5)"
+    bitrix_type="$(registry_get_field "$host" 6)"
+    core_id="$(registry_get_field "$host" 7)"
+    [ -z "$preset" ] && preset="-"
+    [ -z "$db_type" ] && db_type="-"
+    [ -z "$created_at" ] && created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    [ -z "$bitrix_type" ] && bitrix_type="-"
+    [ -z "$core_id" ] && core_id="-"
+    if registry_has_host "$host"; then
+        registry_upsert_host "$host" "$preset" "$version_input" "$db_type" "$created_at" "$bitrix_type" "$core_id" || true
+    fi
+
+    echo "✅ Хост '$project_dir_name' переключён на PHP $version_input."
+    log_event "INFO" "set_php_complete host=$host project_dir_name=$project_dir_name version=$version_input"
+}
+
 infra_start() {
     log_event "INFO" "infra_start_begin"
     if [ "$#" -gt 0 ]; then
@@ -4379,6 +4492,10 @@ main() {
             ;;
         infra-restart)
             infra_restart "$@"
+            ;;
+        set-php)
+            [ "$#" -ge 2 ] || { echo "Usage: hostctl.sh set-php <host> <version>"; usage; exit 1; }
+            set_php_host "$1" "$2"
             ;;
         delete|remove)
             [ "$#" -ge 1 ] || { usage; exit 1; }
