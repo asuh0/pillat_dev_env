@@ -23,8 +23,10 @@ RUN sed -i 's/: ${APACHE_RUN_USER:=.*/: ${APACHE_RUN_USER:=www-data}/' /etc/apac
 # Таймаут 10 минут для долгих запросов (создание проекта + docker compose)
 RUN echo 'Timeout 600' >> /etc/apache2/apache2.conf
 
-# Создаем скрипт для настройки прав на docker.sock и runtime-тома при запуске
-RUN echo '#!/bin/bash\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nmkdir -p /state /projects\nchown -R www-data:www-data /state /projects >/dev/null 2>&1 || true\nchmod -R ug+rwX /state /projects >/dev/null 2>&1 || true' > /usr/local/bin/fix-docker-sock.sh && \
+# Создаем скрипт для настройки прав на docker.sock и runtime-тома при запуске.
+# chown/chmod по /state и /projects выполняем в фоне, иначе они блокируют запуск Apache
+# (на больших деревьях проектов скрипт никогда не завершался → 502 Bad Gateway).
+RUN echo '#!/bin/bash\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nmkdir -p /state /projects\n( chown -R www-data:www-data /state /projects 2>/dev/null; chmod -R ug+rwX /state /projects 2>/dev/null; ) &\ntrue' > /usr/local/bin/fix-docker-sock.sh && \
     chmod +x /usr/local/bin/fix-docker-sock.sh
 
 # Включаем модуль rewrite
