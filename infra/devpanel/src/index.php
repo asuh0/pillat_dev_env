@@ -550,7 +550,7 @@ function getProjectMetadata($projectPath, $hostsRegistry, $bitrixCoreByOwner, $b
         $meta['db_host'] = extractDbHostFromEnv($meta['env']);
         return $meta;
     }
-    // Dockerfile: Dockerfile.php84 -> 8.4, Dockerfile.php81 -> 8.1
+    // Dockerfile: Dockerfile.php84 -> 8.4, Dockerfile.php81 -> 8.1 (поддержка set-php 012)
     if (preg_match('/dockerfile:\s*Dockerfile\.php(\d)(\d)/i', $yaml, $m)) {
         $meta['php_version'] = $m[1] . '.' . $m[2];
     }

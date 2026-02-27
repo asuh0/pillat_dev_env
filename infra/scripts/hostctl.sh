@@ -4063,6 +4063,13 @@ show_status() {
         db_type="$(registry_get_field "$host" 4)"
 
         [ -n "$preset" ] || preset="unknown"
+        if [ -z "$php_version" ] || [ "$php_version" = "-" ]; then
+            project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+            compose_file="$PROJECTS_DIR/$project_dir_name/docker-compose.yml"
+            if [ -f "$compose_file" ]; then
+                php_version="$(grep -oE 'dockerfile:\s*Dockerfile\.php[0-9][0-9]' "$compose_file" 2>/dev/null | head -1 | sed -E 's/.*Dockerfile\.php([0-9])([0-9])/\1.\2/')"
+            fi
+        fi
         [ -n "$php_version" ] || php_version="-"
         [ -n "$db_type" ] || db_type="-"
 
