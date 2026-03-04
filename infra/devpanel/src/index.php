@@ -660,6 +660,7 @@ function getContainerConfig($containerName) {
 
 // Получение статуса контейнеров проекта
 // Контейнер devpanel уже работает от root, поэтому команды выполняются напрямую
+// Фильтр: только контейнеры, принадлежащие проекту (префикс name- или name_), не link-хостов
 function getProjectContainers($projectName) {
     $containers = [];
     $output = [];
@@ -672,6 +673,9 @@ function getProjectContainers($projectName) {
             return [['name' => 'Ошибка доступа', 'status' => 'permission denied', 'image' => '']];
         }
     }
+
+    $norm = str_replace('.', '-', $projectName);
+    $prefixes = [$projectName . '-', $projectName . '_', $norm . '-', $norm . '_'];
     
     foreach ($output as $line) {
         if (empty(trim($line))) continue;
@@ -682,6 +686,18 @@ function getProjectContainers($projectName) {
         $parts = preg_split('/\s+/', $line, 3);
         if (count($parts) >= 2) {
             $containerName = $parts[0];
+            $belongsToProject = ($containerName === $projectName);
+            if (!$belongsToProject) {
+                foreach ($prefixes as $pref) {
+                    if (strpos($containerName, $pref) === 0) {
+                        $belongsToProject = true;
+                        break;
+                    }
+                }
+            }
+            if (!$belongsToProject) {
+                continue;
+            }
             $containers[] = [
                 'name' => $containerName,
                 'status' => $parts[1] ?? 'unknown',

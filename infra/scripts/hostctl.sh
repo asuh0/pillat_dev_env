@@ -211,8 +211,8 @@ canonicalize_host_name() {
     return 1
 }
 
-# Преобразует канонический хост (например shintyre.pillat) в фактическое имя директории проекта.
-# Если проект создан без суффикса (shintyre), возвращает короткое имя для корректного пути.
+# Преобразует канонический хост в фактическое имя директории проекта.
+# Если проект создан без суффикса, возвращает короткое имя для корректного пути.
 resolve_host_to_project_dir() {
     local host="$1"
     local domain_suffix="$2"
@@ -1900,10 +1900,38 @@ core_registry_has_id() {
     awk -F'\t' -v core_id="$core_id" '$1 == core_id {found=1} END {exit !found}' "$BITRIX_CORE_REGISTRY_FILE"
 }
 
-# Для link: разрешает core_ref в фактический core_id (поддержка host/alias)
+# Обнаружение core из .env проектов (legacy: core есть в .env, но не в реестре)
+discovery_core_owner_from_projects() {
+    local core_id="$1"
+    local env_file=""
+    local dir=""
+    local core_id_val=""
+    local bitrix_type_val=""
+    for dir in "$PROJECTS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        dir="${dir%/}"
+        dir="${dir##*/}"
+        env_file="$PROJECTS_DIR/$dir/.env"
+        [ -f "$env_file" ] || env_file="$PROJECTS_DIR/$dir/.env.example"
+        [ -f "$env_file" ] || continue
+        core_id_val="$(grep -E '^BITRIX_CORE_ID=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]#].*//; s/^["'\'']*//; s/["'\'']*$//' | head -c 128)"
+        bitrix_type_val="$(grep -E '^BITRIX_TYPE=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]#].*//; s/^["'\'']*//; s/["'\'']*$//' | head -c 32)"
+        [ -n "$core_id_val" ] || continue
+        [ -n "$bitrix_type_val" ] || continue
+        if [ "$core_id_val" = "$core_id" ] && [[ "$bitrix_type_val" =~ ^(kernel|ext_kernel)$ ]]; then
+            echo "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Для link: разрешает core_ref в фактический core_id (поддержка host/alias, discovery legacy)
 resolve_core_id_for_link() {
     local core_ref="$1"
     local owned=""
+    local core_id=""
+    local owner_host=""
     if core_registry_has_id "$core_ref"; then
         echo "$core_ref"
         return 0
@@ -1917,6 +1945,15 @@ resolve_core_id_for_link() {
         echo "core-$core_ref"
         return 0
     fi
+    # Fallback: discovery из .env проектов (legacy)
+    for core_id in "$core_ref" "core-$core_ref"; do
+        if owner_host="$(discovery_core_owner_from_projects "$core_id" 2>/dev/null)"; then
+            ensure_registry
+            core_registry_upsert "$core_id" "$owner_host" "ext_kernel" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "$core_id"
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -3041,7 +3078,9 @@ create_host() {
             core_id="$resolved_core_id"
 
             core_owner_host="$(core_registry_get_field "$core_id" 2)"
-            if [ -z "$core_owner_host" ] || [ ! -d "$PROJECTS_DIR/$core_owner_host" ]; then
+            local core_project_dir=""
+            core_project_dir="$(resolve_core_project_dir "$core_owner_host")"
+            if [ -z "$core_owner_host" ] || [ ! -d "$PROJECTS_DIR/$core_project_dir" ]; then
                 release_bindings_lock
                 lock_acquired=0
                 fail_with_code "invalid_core" "Владелец core '$core_ref' недоступен."
@@ -3050,13 +3089,14 @@ create_host() {
 
             local core_db_type=""
             local core_db_values=""
-            core_db_type="$(registry_get_field "$core_owner_host" 4)"
+            core_db_type="$(registry_get_field "$core_project_dir" 4)"
+            [ -z "$core_db_type" ] && core_db_type="$(registry_get_field "$core_owner_host" 4)"
             [ -n "$core_db_type" ] || core_db_type="mysql"
             if [ "$db_type" != "$core_db_type" ]; then
                 echo "Info: link-host использует тип БД core '$core_db_type' (параметр --db='$db_type' проигнорирован)."
             fi
             db_type="$core_db_type"
-            core_db_values="$(read_core_db_values "$core_owner_host" "$db_type")"
+            core_db_values="$(read_core_db_values "$core_project_dir" "$db_type")"
             IFS=$'\t' read -r db_name db_user db_password db_root_password db_external_port <<EOF
 $core_db_values
 EOF
