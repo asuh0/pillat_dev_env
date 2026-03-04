@@ -20,7 +20,8 @@ mkdir -p \
     "$INFRA_DIR/state" \
     "$DEV_DIR/logs/traefik" \
     "$DEV_DIR/shared-volumes/grafana-data" \
-    "$DEV_DIR/shared-volumes/loki-data"
+    "$DEV_DIR/shared-volumes/loki-data" \
+    "$DEV_DIR/shared-volumes/promtail-positions"
 
 # 3) На macOS внешние диски часто оставляют sidecar-файлы (._*), которые ломают Docker/Git.
 if command -v python3 >/dev/null 2>&1; then

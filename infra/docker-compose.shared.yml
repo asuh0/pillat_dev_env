@@ -18,6 +18,12 @@ volumes:
       type: none
       o: bind
       device: ${PWD}/../shared-volumes/loki-data
+  promtail_positions:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/../shared-volumes/promtail-positions
 
 services:
   traefik:
@@ -110,6 +116,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - promtail_positions:/var/lib/promtail
       - ../logs:/logs:ro
       - ../projects:/projects:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
