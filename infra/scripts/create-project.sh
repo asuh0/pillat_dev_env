@@ -403,6 +403,24 @@ elif [ "$DB_TYPE" = "postgres" ]; then
 EOF
 fi
 
+# .dockerignore: из пресета или fallback на empty (уменьшает контекст сборки PHP)
+if [ -f "$PRESET_DIR/.dockerignore" ]; then
+    cp "$PRESET_DIR/.dockerignore" "$PROJECT_DIR/.dockerignore"
+elif [ -f "$PRESETS_DIR/empty/.dockerignore" ]; then
+    cp "$PRESETS_DIR/empty/.dockerignore" "$PROJECT_DIR/.dockerignore"
+else
+    cat > "$PROJECT_DIR/.dockerignore" <<'DOCKERIGNORE'
+www
+www/
+.git
+.git/
+vendor
+vendor/
+node_modules
+node_modules/
+DOCKERIGNORE
+fi
+
 # Создание Dockerfile
 DOCKERFILE_TARGET="$PROJECT_DIR/Dockerfile.php${PHP_VERSION//./}"
 DOCKERFILE_TEMPLATE="$TEMPLATES_DIR/php/Dockerfile.php${PHP_VERSION//./}"

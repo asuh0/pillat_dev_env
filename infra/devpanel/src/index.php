@@ -550,8 +550,10 @@ function getProjectMetadata($projectPath, $hostsRegistry, $bitrixCoreByOwner, $b
         $meta['db_host'] = extractDbHostFromEnv($meta['env']);
         return $meta;
     }
-    // Dockerfile: Dockerfile.php84 -> 8.4, Dockerfile.php81 -> 8.1 (поддержка set-php 012)
-    if (preg_match('/dockerfile:\s*Dockerfile\.php(\d)(\d)/i', $yaml, $m)) {
+    // PHP-версия: приоритет у реестра (обновляется set-php), иначе из docker-compose (поддержка set-php 012)
+    if (isset($hostsRegistry[$hostName]['php_version']) && trim((string)$hostsRegistry[$hostName]['php_version']) !== '') {
+        $meta['php_version'] = trim($hostsRegistry[$hostName]['php_version']);
+    } elseif (preg_match('/dockerfile:\s*Dockerfile\.php(\d)(\d)/i', $yaml, $m)) {
         $meta['php_version'] = $m[1] . '.' . $m[2];
     }
     if (stripos($yaml, 'mysql:') !== false || preg_match('/image:\s*mysql/i', $yaml)) {
@@ -1391,6 +1393,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' ' . escapeshellarg($action) . ' ' . escapeshellarg($projectName) . ' 2>&1';
             }
 
+            // По аналогии с set-php: при AJAX запускаем start/restart в фоне и отдаём job_id для опроса лога
+            if (($action === 'start' || $action === 'restart') && $isAjax) {
+                $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+                if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
+                    $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
+                    if (!headers_sent()) {
+                        header('Content-Type: application/json; charset=utf-8');
+                    }
+                    echo json_encode($actionResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    exit;
+                }
+                @chmod($jobsDir, 0775);
+                $prefix = $action === 'restart' ? 'restart_' : 'start_';
+                try {
+                    $jobId = $prefix . gmdate('Ymd_His') . '_' . bin2hex(random_bytes(4));
+                } catch (Throwable $e) {
+                    $jobId = $prefix . gmdate('Ymd_His') . '_' . uniqid();
+                }
+                $jobLogFile = $jobsDir . '/' . $jobId . '.log';
+                $jobExitFile = $jobsDir . '/' . $jobId . '.exit';
+                $jobMetaFile = $jobsDir . '/' . $jobId . '.json';
+                $jobScriptFile = $jobsDir . '/' . $jobId . '.sh';
+                $scriptBody = "#!/usr/bin/env bash\nset -u\nrm -f " . escapeshellarg($jobExitFile) . "\n"
+                    . $cmd . " > " . escapeshellarg($jobLogFile) . " 2>&1\n"
+                    . "echo \$? > " . escapeshellarg($jobExitFile) . "\n";
+                if (@file_put_contents($jobScriptFile, $scriptBody) === false) {
+                    $actionResult = ['type' => 'error', 'message' => 'Не удалось создать скрипт фоновой задачи.'];
+                    if (!headers_sent()) {
+                        header('Content-Type: application/json; charset=utf-8');
+                    }
+                    echo json_encode($actionResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    exit;
+                }
+                @chmod($jobScriptFile, 0700);
+                $meta = [
+                    'job_id' => $jobId,
+                    'action' => $action,
+                    'project' => $projectName,
+                    'command' => $cmd,
+                    'created_at' => gmdate('Y-m-d\TH:i:s\Z'),
+                    'status' => 'running',
+                    'result_logged' => false,
+                ];
+                @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $pidOutput = [];
+                $launchCmd = 'nohup bash ' . escapeshellarg($jobScriptFile) . ' >/dev/null 2>&1 & echo $!';
+                @exec($launchCmd, $pidOutput, $launchCode);
+                $pid = trim((string)($pidOutput[0] ?? ''));
+                if ($launchCode !== 0 || $pid === '') {
+                    $actionResult = ['type' => 'error', 'message' => 'Не удалось запустить фоновую задачу.'];
+                    if (!headers_sent()) {
+                        header('Content-Type: application/json; charset=utf-8');
+                    }
+                    echo json_encode($actionResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    exit;
+                }
+                $meta['pid'] = $pid;
+                @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                logDevpanelAction($stateDir, $action, 'pending', ['project' => $projectName, 'job_id' => $jobId, 'pid' => $pid]);
+                $actionResult = [
+                    'type' => 'pending',
+                    'status' => 'running',
+                    'message' => ($action === 'restart' ? 'Перезапуск' : 'Запуск') . " {$projectName} запущен",
+                    'job_id' => $jobId,
+                    'offset' => 0,
+                ];
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=utf-8');
+                    header('Cache-Control: no-cache, must-revalidate');
+                }
+                echo json_encode($actionResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+
             $output = [];
             exec($cmd, $output, $return);
 
@@ -1413,6 +1489,129 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 exit;
             }
             break;
+
+        case 'start_status':
+        case 'restart_status':
+            if (!$isAjax) {
+                $actionResult = ['type' => 'error', 'message' => $action . ' доступен только через AJAX'];
+                break;
+            }
+            $jobId = trim((string)($_POST['job_id'] ?? ''));
+            $offset = (int)($_POST['offset'] ?? 0);
+            $prefix = $action === 'restart_status' ? 'restart_' : 'start_';
+            if (!preg_match('/^' . preg_quote($prefix, '/') . '[A-Za-z0-9_.-]+$/', $jobId)) {
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=utf-8');
+                }
+                echo json_encode([
+                    'type' => 'error',
+                    'status' => 'done',
+                    'message' => 'Некорректный идентификатор задачи',
+                    'job_id' => $jobId,
+                    'offset' => 0,
+                    'chunk' => '',
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+            $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+            if ($jobsDir === '' || !is_dir($jobsDir)) {
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=utf-8');
+                }
+                echo json_encode([
+                    'type' => 'error',
+                    'status' => 'done',
+                    'message' => 'Каталог фоновых задач недоступен',
+                    'job_id' => $jobId,
+                    'offset' => 0,
+                    'chunk' => '',
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+            $jobMetaFile = $jobsDir . '/' . $jobId . '.json';
+            $jobLogFile = $jobsDir . '/' . $jobId . '.log';
+            $jobExitFile = $jobsDir . '/' . $jobId . '.exit';
+            if (!is_file($jobMetaFile)) {
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=utf-8');
+                }
+                echo json_encode([
+                    'type' => 'error',
+                    'status' => 'done',
+                    'message' => 'Задача не найдена',
+                    'job_id' => $jobId,
+                    'offset' => 0,
+                    'chunk' => '',
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+            $chunk = '';
+            $newOffset = max(0, $offset);
+            if (is_file($jobLogFile)) {
+                $size = (int)@filesize($jobLogFile);
+                if ($size < 0) $size = 0;
+                if ($newOffset > $size) $newOffset = $size;
+                $fh = @fopen($jobLogFile, 'rb');
+                if (is_resource($fh)) {
+                    @fseek($fh, $newOffset);
+                    $part = stream_get_contents($fh);
+                    if ($part !== false) {
+                        $chunk = $part;
+                        $newOffset += strlen($part);
+                    }
+                    @fclose($fh);
+                }
+            }
+            $isDone = is_file($jobExitFile);
+            $exitCode = null;
+            $type = 'pending';
+            $status = 'running';
+            $message = $action === 'restart_status' ? 'Перезапуск...' : 'Запуск...';
+            if ($isDone) {
+                $status = 'done';
+                $exitRaw = trim((string)@file_get_contents($jobExitFile));
+                $exitCode = is_numeric($exitRaw) ? (int)$exitRaw : 1;
+                $type = $exitCode === 0 ? 'success' : 'error';
+                $meta = json_decode((string)@file_get_contents($jobMetaFile), true);
+                $projectName = is_array($meta) ? trim((string)($meta['project'] ?? '')) : '';
+                if ($exitCode === 0) {
+                    $message = $action === 'restart_status' ? "Проект {$projectName} перезапущен." : "Проект {$projectName} запущен.";
+                } else {
+                    $message = 'Команда завершилась с ошибкой';
+                }
+                if (is_array($meta) && empty($meta['result_logged'])) {
+                    $headLines = [];
+                    if (is_file($jobLogFile)) {
+                        $allLines = @file($jobLogFile, FILE_IGNORE_NEW_LINES);
+                        if (is_array($allLines)) {
+                            $headLines = array_slice($allLines, 0, 25);
+                        }
+                    }
+                    logDevpanelAction($stateDir, $meta['action'] ?? $action, $exitCode === 0 ? 'success' : 'error', [
+                        'project' => $meta['project'] ?? null,
+                        'job_id' => $jobId,
+                        'output_head' => $headLines,
+                        'exit_code' => $exitCode,
+                    ]);
+                    $meta['result_logged'] = true;
+                    $meta['status'] = $exitCode === 0 ? 'success' : 'error';
+                    @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                }
+            }
+            if (!headers_sent()) {
+                header('Content-Type: application/json; charset=utf-8');
+                header('Cache-Control: no-cache, must-revalidate');
+            }
+            echo json_encode([
+                'type' => $type,
+                'status' => $status,
+                'message' => $message,
+                'job_id' => $jobId,
+                'offset' => $newOffset,
+                'chunk' => $chunk,
+                'exit_code' => $exitCode ?? null,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            exit;
 
         case 'set-php':
             $projectName = trim($_POST['project_name'] ?? '');
@@ -2298,18 +2497,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             <?php endif; ?>
 
                             <div class="btn-action-group">
-                                <form method="POST" action="" style="display: inline;">
+                                <form method="POST" action="" class="devpanel-host-action-form" style="display: inline;" data-action="<?= $isRunning ? 'stop' : 'start' ?>">
                                     <input type="hidden" name="action" value="<?= $isRunning ? 'stop' : 'start' ?>">
                                     <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
+                                    <?php if (!$isRunning): ?><input type="hidden" name="ajax" value="1"><?php endif; ?>
                                     <button type="submit" class="btn btn-sm btn-<?= $isRunning ? 'warning' : 'success' ?> btn-action">
                                         <i class="bi bi-<?= $isRunning ? 'stop' : 'play' ?>-fill"></i> 
                                         <?= $isRunning ? 'Остановить' : 'Запустить' ?>
                                     </button>
                                 </form>
                                 
-                                <form method="POST" action="" style="display: inline;">
+                                <form method="POST" action="" class="devpanel-host-action-form" style="display: inline;" data-action="restart">
                                     <input type="hidden" name="action" value="restart">
                                     <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
+                                    <input type="hidden" name="ajax" value="1">
                                     <button type="submit" class="btn btn-sm btn-secondary btn-action">
                                         <i class="bi bi-arrow-clockwise"></i> Перезапустить
                                     </button>
@@ -2607,7 +2808,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             let offset = Number.isFinite(Number(data.offset)) ? Number(data.offset) : 0;
                             const jobId = data.job_id;
                             const pollStartedAt = Date.now();
-                            const pollTimeoutMs = 12 * 60 * 1000; // 12 минут
+                            const pollTimeoutMs = 25 * 60 * 1000; // 25 мин (первая сборка PHP-образа с apk/perl может быть долгой)
 
                             const pollStatus = () => {
                                 if (Date.now() - pollStartedAt > pollTimeoutMs) {
@@ -2750,6 +2951,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
             const errorAlert = document.getElementById('setPhpErrorAlert');
 
             modalTitle.textContent = 'Переключение PHP...';
+            var setPhpSpinnerTextEl = document.getElementById('setPhpModalSpinnerText');
+            if (setPhpSpinnerTextEl) setPhpSpinnerTextEl.textContent = 'Выполняется переключение версии PHP...';
             logOutput.innerHTML = '';
             logContainer.style.display = 'none';
             spinner.style.display = 'block';
@@ -2814,7 +3017,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     var offset = Number.isFinite(Number(data.offset)) ? Number(data.offset) : 0;
                     var jobId = data.job_id;
                     var pollStartedAt = Date.now();
-                    var pollTimeoutMs = 12 * 60 * 1000;
+                    var pollTimeoutMs = 25 * 60 * 1000; // 25 мин для set-php/start/restart (сборка образа)
 
                     function pollStatus() {
                         if (Date.now() - pollStartedAt > pollTimeoutMs) {
@@ -2889,6 +3092,184 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 renderLogChunk('Ошибка: ' + err.message, false);
             });
         });
+
+        // Start / Restart хоста: перехват формы, модалка с логом и опрос статуса (то же окно, что при развёртывании/set-php)
+        document.addEventListener('submit', function(e) {
+            if (!e.target.classList.contains('devpanel-host-action-form')) return;
+            var form = e.target;
+            var action = (form.querySelector('input[name="action"]') || {}).value;
+            if (action === 'stop') return; // Остановить — обычная отправка без модалки
+            if (action !== 'start' && action !== 'restart') return;
+            e.preventDefault();
+
+            var requestUrl = window.location.pathname || '/index.php';
+            var modal = new bootstrap.Modal(document.getElementById('setPhpModal'));
+            var modalTitle = document.getElementById('setPhpModalTitle');
+            var logOutput = document.getElementById('setPhpLogOutput');
+            var logContainer = document.getElementById('setPhpLogContainer');
+            var spinner = document.getElementById('setPhpSpinner');
+            var successAlert = document.getElementById('setPhpSuccessAlert');
+            var errorAlert = document.getElementById('setPhpErrorAlert');
+
+            var titleText = action === 'restart' ? 'Перезапуск проекта...' : 'Запуск проекта...';
+            var spinnerText = action === 'restart' ? 'Выполняется перезапуск проекта...' : 'Выполняется запуск проекта...';
+            modalTitle.textContent = titleText;
+            var spinnerTextEl = document.getElementById('setPhpModalSpinnerText');
+            if (spinnerTextEl) spinnerTextEl.textContent = spinnerText;
+            logOutput.innerHTML = '';
+            logContainer.style.display = 'none';
+            spinner.style.display = 'block';
+            successAlert.style.display = 'none';
+            errorAlert.style.display = 'none';
+            modal.show();
+
+            function escapeHtmlLocal(text) {
+                var div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+            function renderLogChunk(chunk, append) {
+                if (!chunk || !chunk.trim()) return;
+                logContainer.style.display = 'block';
+                var lines = chunk.split('\n');
+                var html = lines.map(function(line) {
+                    var escaped = escapeHtmlLocal(line);
+                    if (line.trim() === '') return '<div class="log-line-empty">&nbsp;</div>';
+                    var lowerLine = line.toLowerCase();
+                    if (lowerLine.indexOf('error') !== -1 || lowerLine.indexOf('failed') !== -1 || lowerLine.indexOf('unable') !== -1) {
+                        return '<div class="log-line log-line-error">' + escaped + '</div>';
+                    }
+                    if (lowerLine.indexOf('success') !== -1 || lowerLine.indexOf('✅') !== -1) {
+                        return '<div class="log-line log-line-success">' + escaped + '</div>';
+                    }
+                    if (lowerLine.indexOf('building') !== -1 || lowerLine.indexOf('pulling') !== -1) {
+                        return '<div class="log-line log-line-info">' + escaped + '</div>';
+                    }
+                    return '<div class="log-line">' + escaped + '</div>';
+                }).join('');
+                if (append) {
+                    logOutput.innerHTML += html;
+                } else {
+                    logOutput.innerHTML = html;
+                }
+                logOutput.scrollTop = logOutput.scrollHeight;
+            }
+            function parseJsonResponse(response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                var ct = response.headers.get('content-type');
+                if (!ct || ct.indexOf('application/json') === -1) {
+                    return response.text().then(function(t) { throw new Error('Не JSON: ' + t.substring(0, 80)); });
+                }
+                return response.json();
+            }
+
+            var params = new URLSearchParams();
+            new FormData(form).forEach(function(v, k) { params.append(k, v); });
+            params.set('ajax', '1'); // гарантированно AJAX, чтобы бэкенд не выполнял start синхронно
+
+            var abortCtrl = new AbortController();
+            var timeoutId = setTimeout(function() {
+                abortCtrl.abort();
+            }, 15000);
+
+            fetch(requestUrl, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                body: params.toString(),
+                signal: abortCtrl.signal
+            })
+            .then(function(response) {
+                clearTimeout(timeoutId);
+                return parseJsonResponse(response);
+            })
+            .then(function(data) {
+                if (data.type === 'pending' && data.job_id) {
+                    modalTitle.innerHTML = '<i class="bi bi-hourglass-split text-primary"></i> ' + titleText;
+                    logContainer.style.display = 'block';
+                    renderLogChunk(data.chunk && data.chunk.trim() ? data.chunk : 'Задача запущена, ожидаем вывод...\n', false);
+                    var offset = Number.isFinite(Number(data.offset)) ? Number(data.offset) : 0;
+                    var jobId = data.job_id;
+                    var statusAction = action === 'restart' ? 'restart_status' : 'start_status';
+                    var pollStartedAt = Date.now();
+                    var pollTimeoutMs = 25 * 60 * 1000; // 25 мин для set-php/start/restart (сборка образа)
+
+                    function pollStatus() {
+                        if (Date.now() - pollStartedAt > pollTimeoutMs) {
+                            spinner.style.display = 'none';
+                            modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Таймаут';
+                            errorAlert.style.display = 'block';
+                            errorAlert.querySelector('.alert-message').textContent = 'Превышено время ожидания.';
+                            return;
+                        }
+                        var statusData = new URLSearchParams();
+                        statusData.append('action', statusAction);
+                        statusData.append('ajax', '1');
+                        statusData.append('job_id', jobId);
+                        statusData.append('offset', String(offset));
+
+                        fetch(requestUrl, {
+                            method: 'POST',
+                            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                            body: statusData.toString()
+                        })
+                        .then(parseJsonResponse)
+                        .then(function(resp) {
+                            if (typeof resp.offset !== 'undefined' && Number.isFinite(Number(resp.offset))) offset = Number(resp.offset);
+                            if (resp.chunk) renderLogChunk(resp.chunk, true);
+                            if (resp.status === 'running') {
+                                setTimeout(pollStatus, 1200);
+                                return;
+                            }
+                            spinner.style.display = 'none';
+                            if (resp.type === 'success') {
+                                modalTitle.innerHTML = '<i class="bi bi-check-circle text-success"></i> Готово';
+                                successAlert.style.display = 'block';
+                                successAlert.querySelector('.alert-message').textContent = resp.message || (action === 'restart' ? 'Проект перезапущен.' : 'Проект запущен.');
+                                setTimeout(function() { window.location.reload(); }, 2000);
+                            } else {
+                                modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Ошибка';
+                                errorAlert.style.display = 'block';
+                                errorAlert.querySelector('.alert-message').textContent = resp.message || (action === 'restart' ? 'Перезапуск завершился с ошибкой.' : 'Запуск завершился с ошибкой.');
+                            }
+                        })
+                        .catch(function(err) {
+                            spinner.style.display = 'none';
+                            modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Ошибка запроса';
+                            errorAlert.style.display = 'block';
+                            errorAlert.querySelector('.alert-message').textContent = err.message;
+                            logContainer.style.display = 'block';
+                            renderLogChunk('Ошибка: ' + err.message, true);
+                        });
+                    }
+                    setTimeout(pollStatus, 500);
+                    return;
+                }
+                spinner.style.display = 'none';
+                if (data.type === 'success') {
+                    modalTitle.innerHTML = '<i class="bi bi-check-circle text-success"></i> Готово';
+                    successAlert.style.display = 'block';
+                    successAlert.querySelector('.alert-message').textContent = data.message;
+                    setTimeout(function() { window.location.reload(); }, 2000);
+                } else {
+                    modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Ошибка';
+                    errorAlert.style.display = 'block';
+                    errorAlert.querySelector('.alert-message').textContent = data.message || 'Ошибка выполнения.';
+                    if (data.message) renderLogChunk(data.message, false);
+                }
+            })
+            .catch(function(err) {
+                clearTimeout(timeoutId);
+                spinner.style.display = 'none';
+                modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Ошибка запроса';
+                errorAlert.style.display = 'block';
+                var errMsg = err.name === 'AbortError'
+                    ? 'Сервер не ответил за 15 с. Возможно, запуск выполняется синхронно. Обновите страницу через минуту.'
+                    : err.message;
+                errorAlert.querySelector('.alert-message').textContent = errMsg;
+                logContainer.style.display = 'block';
+                renderLogChunk('Ошибка: ' + errMsg, false);
+            });
+        });
         
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -2946,7 +3327,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                         <div class="spinner-border text-primary" role="status">
                             <span class="visually-hidden">Загрузка...</span>
                         </div>
-                        <p class="mt-3 text-muted">Выполняется переключение версии PHP...</p>
+                        <p id="setPhpModalSpinnerText" class="mt-3 text-muted">Выполняется переключение версии PHP...</p>
                     </div>
                     <div id="setPhpSuccessAlert" class="alert alert-success" style="display:none;">
                         <i class="bi bi-check-circle"></i> <span class="alert-message"></span>

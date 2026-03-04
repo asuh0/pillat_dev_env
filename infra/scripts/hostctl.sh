@@ -2111,6 +2111,17 @@ runtime_host_compose() {
     local project_dir="$1"
     shift
 
+    # Docker Compose ожидает .env в каталоге проекта (build и up). project_dir — монт, запись видна на хосте.
+    if [ ! -f "$project_dir/.env" ]; then
+        if [ -f "$project_dir/.env.example" ]; then
+            cp "$project_dir/.env.example" "$project_dir/.env"
+        else
+            # Минимальный .env, чтобы compose не падал с "couldn't find env file"
+            echo "PROJECT_NAME=$(basename "$project_dir")" > "$project_dir/.env"
+            echo "TZ=${TZ:-Europe/Moscow}" >> "$project_dir/.env"
+        fi
+    fi
+
     # В контейнере devpanel /projects не является host-shared путём для Docker Desktop.
     # Поэтому:
     # 1) все относительные bind-пути резолвим через --project-directory в host-путь;
@@ -2127,6 +2138,25 @@ runtime_host_compose() {
                 host_root_dir="$(dirname "$host_projects_dir")"
                 local host_logs_dir="$host_root_dir/logs"
                 local tmp_compose="$project_dir/docker-compose.yml.tmp.runtime.$$"
+                local project_name_attr
+                project_name_attr="$(basename "$project_dir")"
+
+                # Daemon ищет .env по host-пути; создаём через one-off контейнер с host-монтом.
+                # Если есть .env.example — копируем; иначе создаём минимальный .env (PROJECT_NAME, TZ), чтобы compose не падал.
+                if ! docker run --rm -e "PNAME=${project_name_attr}" -v "$host_project_dir:/data:rw" alpine sh -c '
+                    if [ -f /data/.env ]; then exit 0; fi
+                    if [ -f /data/.env.example ]; then cp /data/.env.example /data/.env; exit 0; fi
+                    echo "PROJECT_NAME=${PNAME:-project}" > /data/.env
+                    echo "TZ=${TZ:-Europe/Moscow}" >> /data/.env
+                ' 2>/dev/null; then
+                    # fallback: минимальный .env через busybox (часто уже есть)
+                    docker run --rm -e "PNAME=${project_name_attr}" -v "$host_project_dir:/data:rw" busybox sh -c '
+                        if [ -f /data/.env ]; then exit 0; fi
+                        if [ -f /data/.env.example ]; then cp /data/.env.example /data/.env; exit 0; fi
+                        echo "PROJECT_NAME=${PNAME:-project}" > /data/.env
+                        echo "TZ=Europe/Moscow" >> /data/.env
+                    ' 2>/dev/null || true
+                fi
 
                 awk \
                     -v container_project_dir="$project_dir" \
@@ -2140,6 +2170,13 @@ runtime_host_compose() {
                             $0 ~ /^[[:space:]]*context:[[:space:]]*\/Volumes\/[^[:space:]]+[[:space:]]*$/ ||
                             $0 ~ /^[[:space:]]*context:[[:space:]]*"\/Volumes\/[^"]+"[[:space:]]*$/) {
                             print "      context: \"" container_project_dir "\""
+                            next
+                        }
+
+                        # env_file: .env резолвится относительно project-dir (host-путь); CLI в контейнере его не видит.
+                        # Подменяем на контейнерный путь, чтобы CLI мог прочитать файл.
+                        if ($0 ~ /^[[:space:]]*env_file:[[:space:]]*\.env[[:space:]]*$/) {
+                            print "    env_file: \"" container_project_dir "/.env\""
                             next
                         }
 
@@ -2164,9 +2201,13 @@ runtime_host_compose() {
                     }
                 ' "$compose_file" > "$tmp_compose"
 
-                COPYFILE_DISABLE=1 docker compose \
+                # CLI compose работает в контейнере — передаём --env-file с путём, доступным в контейнере (project_dir).
+                # --project-directory с host-путём нужен daemon для volumes/build; .env читает CLI по --env-file.
+                # DOCKER_BUILDKIT=0 и COMPOSE_DOCKER_CLI_BUILD=0 — обход требования buildx в контейнере devpanel
+                COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose \
                     -f "$tmp_compose" \
                     --project-directory "$host_project_dir" \
+                    --env-file "$project_dir/.env" \
                     "$@"
                 local compose_exit=$?
                 rm -f "$tmp_compose" 2>/dev/null || true
@@ -2175,7 +2216,7 @@ runtime_host_compose() {
         fi
     fi
 
-    (cd "$project_dir" && COPYFILE_DISABLE=1 docker compose "$@")
+    (cd "$project_dir" && COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose "$@")
 }
 
 runtime_host_up() {
@@ -3426,6 +3467,19 @@ start_host() {
         exit 1
     fi
 
+    # Docker Compose требует .env в каталоге проекта; при отсутствии создаём из .env.example
+    local env_file="$project_dir/.env"
+    local env_example="$project_dir/.env.example"
+    if [ ! -f "$env_file" ]; then
+        if [ -f "$env_example" ]; then
+            cp "$env_example" "$env_file"
+            echo "   ℹ️  Создан $env_file из .env.example (файл отсутствовал)."
+        else
+            echo "Error: в каталоге хоста нет .env и .env.example. Восстановите проект через './hostctl.sh create $host' или добавьте .env вручную."
+            exit 1
+        fi
+    fi
+
     ensure_php_ini_mount_in_compose "$compose_file" "$project_dir" || true
     ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
 
@@ -3685,13 +3739,31 @@ set_php_host() {
 
     cp "$template_file" "$project_dir/Dockerfile.php$php_suffix"
 
-    if ! runtime_host_compose "$project_dir" build php; then
+    # .dockerignore: из пресета empty или минимальный (исправляем старые проекты без него)
+    if [ -f "$DEV_DIR/presets/empty/.dockerignore" ]; then
+        cp "$DEV_DIR/presets/empty/.dockerignore" "$project_dir/.dockerignore"
+    else
+        cat > "$project_dir/.dockerignore" <<'DOCKERIGNORE'
+www
+www/
+.git
+.git/
+vendor
+vendor/
+node_modules
+node_modules/
+DOCKERIGNORE
+    fi
+    echo "   Обновлён .dockerignore в каталоге проекта (контекст сборки уменьшен)."
+
+    # Пересборка без кэша, чтобы образ гарантированно использовал новую версию PHP (phpinfo() и т.д.)
+    if ! runtime_host_compose "$project_dir" build --no-cache php; then
         echo "Error: не удалось пересобрать образ PHP для '$project_dir_name'."
         exit 1
     fi
 
     if [ "$was_running" -eq 1 ]; then
-        if ! runtime_host_compose "$project_dir" up -d php; then
+        if ! runtime_host_compose "$project_dir" up -d --force-recreate php; then
             echo "Error: не удалось перезапустить контейнер php для '$project_dir_name'."
             exit 1
         fi

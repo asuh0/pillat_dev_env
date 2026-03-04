@@ -1,0 +1,9 @@
+# Контекст сборки PHP: исключаем тяжёлое (www монтируется как volume)
+www
+www/
+.git
+.git/
+vendor
+vendor/
+node_modules
+node_modules/

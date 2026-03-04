@@ -1,8 +1,10 @@
 ARG PHP_VERSION=8.4
 FROM php:${PHP_VERSION}-fpm-alpine
 
-# Установка зависимостей (PHPIZE_DEPS нужен для pecl/сборки расширений)
-RUN apk add --no-cache \
+# Установка зависимостей для сборки расширений (docker-php-ext-install).
+# PHPIZE_DEPS тянет autoconf → perl (убрать нельзя при сборке из исходников).
+# libzip-dev требует: bzip2-dev, xz-dev, zlib-dev, zstd-dev, pkgconf.
+RUN apk update && apk add --no-cache \
     $PHPIZE_DEPS \
     git \
     curl \
@@ -10,6 +12,11 @@ RUN apk add --no-cache \
     libjpeg-turbo-dev \
     freetype-dev \
     oniguruma-dev \
+    bzip2-dev \
+    xz-dev \
+    zlib-dev \
+    zstd-dev \
+    pkgconf \
     libzip-dev \
     postgresql-dev \
     mysql-client \
