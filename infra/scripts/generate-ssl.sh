@@ -9,9 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(dirname "$SCRIPT_DIR")"
 DEV_DIR="$(dirname "$INFRA_DIR")"
 PROJECTS_DIR="$DEV_DIR/projects"
-STATE_DIR="$INFRA_DIR/state"
 SSL_DIR="$INFRA_DIR/ssl"
-REGISTRY_FILE="$STATE_DIR/hosts-registry.tsv"
+REGISTRY_FILE="$PROJECTS_DIR/.registry/hosts-registry.tsv"
+DOMAINS_REGISTRY_DIR="$PROJECTS_DIR/.registry"
 LEGACY_REGISTRY_FILE="$PROJECTS_DIR/.hosts-registry.tsv"
 
 CA_KEY="$SSL_DIR/ca-key.pem"
@@ -21,8 +21,8 @@ TRAEFIK_KEY="$SSL_DIR/traefik-key.pem"
 TRAEFIK_CERT="$SSL_DIR/traefik-cert.pem"
 TRAEFIK_CSR="$SSL_DIR/traefik.csr"
 TRAEFIK_EXT="$SSL_DIR/traefik.ext"
-DOMAINS_FILE="$STATE_DIR/traefik-domains.txt"
-DOMAINS_HASH_FILE="$STATE_DIR/traefik-domains.sha256"
+DOMAINS_FILE="$DOMAINS_REGISTRY_DIR/traefik-domains.txt"
+DOMAINS_HASH_FILE="$DOMAINS_REGISTRY_DIR/traefik-domains.sha256"
 LEGACY_DOMAINS_FILE="$SSL_DIR/.traefik-domains.txt"
 LEGACY_DOMAINS_HASH_FILE="$SSL_DIR/.traefik-domains.sha256"
 CA_CN="Docker Env Asuho Dev CA"
@@ -64,7 +64,7 @@ done
 
 ensure_ca() {
     mkdir -p "$SSL_DIR"
-    mkdir -p "$STATE_DIR"
+    mkdir -p "$DOMAINS_REGISTRY_DIR"
 
     if [ -f "$CA_KEY" ] && [ -f "$CA_CERT" ]; then
         return 0

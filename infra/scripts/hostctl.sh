@@ -16,26 +16,31 @@ INFRA_DIR="$(dirname "$SCRIPT_DIR")"
 DEV_DIR="$(dirname "$INFRA_DIR")"
 PROJECTS_DIR="${DEV_DIR}/projects"
 PROJECTS_DIR="${PROJECTS_DIR//\/\//\/}"
-STATE_DIR_DEFAULT="$INFRA_DIR/state"
-if [ "$PROJECTS_DIR" = "/projects" ] && [ -d "/state" ]; then
-    STATE_DIR_DEFAULT="/state"
+CONFIG_DIR_DEFAULT="$INFRA_DIR/config"
+LOGS_DIR_DEFAULT="$DEV_DIR/logs"
+if [ "$PROJECTS_DIR" = "/projects" ] && [ -d "/config" ]; then
+    CONFIG_DIR_DEFAULT="/config"
+    LOGS_DIR_DEFAULT="/logs"
 fi
-STATE_DIR="${HOSTCTL_STATE_DIR:-$STATE_DIR_DEFAULT}"
-STATE_DIR="${STATE_DIR//\/\//\/}"
+CONFIG_DIR="${HOSTCTL_CONFIG_DIR:-$CONFIG_DIR_DEFAULT}"
+CONFIG_DIR="${CONFIG_DIR//\/\//\/}"
+LOGS_DIR="${HOSTCTL_LOGS_DIR:-$LOGS_DIR_DEFAULT}"
+LOGS_DIR="${LOGS_DIR//\/\//\/}"
+REGISTRY_DIR="${PROJECTS_DIR}/.registry"
 CREATE_SCRIPT="$SCRIPT_DIR/create-project.sh"
 HOSTS_SCRIPT="$SCRIPT_DIR/manage-hosts.sh"
 GENERATE_SSL_SCRIPT="$SCRIPT_DIR/generate-ssl.sh"
-REGISTRY_FILE="$STATE_DIR/hosts-registry.tsv"
-BITRIX_CORE_REGISTRY_FILE="$STATE_DIR/bitrix-core-registry.tsv"
-BITRIX_BINDINGS_FILE="$STATE_DIR/bitrix-bindings.tsv"
-BITRIX_BINDINGS_LOCK_DIR="$STATE_DIR/bitrix-bindings.lock"
+REGISTRY_FILE="$REGISTRY_DIR/hosts-registry.tsv"
+BITRIX_CORE_REGISTRY_FILE="$REGISTRY_DIR/bitrix-core-registry.tsv"
+BITRIX_BINDINGS_FILE="$REGISTRY_DIR/bitrix-bindings.tsv"
+BITRIX_BINDINGS_LOCK_DIR="$REGISTRY_DIR/bitrix-bindings.lock"
 INFRA_COMPOSE_FILE="$INFRA_DIR/docker-compose.shared.yml"
 INFRA_DEVPANEL_FALLBACK_COMPOSE_FILE="$INFRA_DIR/docker-compose.devpanel-fallback.yml"
 INFRA_DEVPANEL_FALLBACK_SERVICE="devpanel_fallback"
 INFRA_DEVPANEL_FALLBACK_TLS_VOLUME="infra_traefik_tls_fallback"
 INFRA_ENV_FILE="$INFRA_DIR/.env.global"
-INFRA_RUNTIME_MODE_FILE="$STATE_DIR/infra-runtime-mode"
-HOSTCTL_LOG_FILE="$STATE_DIR/hostctl.log"
+INFRA_RUNTIME_MODE_FILE="$CONFIG_DIR/infra-runtime-mode"
+HOSTCTL_LOG_FILE="$LOGS_DIR/hostctl.log"
 HOSTCTL_CURRENT_COMMAND=""
 HOSTCTL_CURRENT_ARGS=""
 HOST_PROJECTS_DIR_CACHE=""
@@ -46,7 +51,7 @@ if [ -f "$DOMAIN_ZONE_HELPER" ]; then
     source "$DOMAIN_ZONE_HELPER"
 fi
 
-HOSTCTL_STATE_DIR="$STATE_DIR"
+HOSTCTL_CONFIG_DIR="$CONFIG_DIR"
 DEV_TOOLS_LIB="$SCRIPT_DIR/dev-tools-lib.sh"
 if [ -f "$DEV_TOOLS_LIB" ]; then
     # shellcheck source=/dev/null
@@ -393,8 +398,12 @@ prompt_port_with_default() {
 }
 
 ensure_state_dir() {
-    mkdir -p "$STATE_DIR" >/dev/null 2>&1 || true
-    chmod 0775 "$STATE_DIR" >/dev/null 2>&1 || true
+    mkdir -p "$CONFIG_DIR" >/dev/null 2>&1 || true
+    chmod 0775 "$CONFIG_DIR" >/dev/null 2>&1 || true
+    mkdir -p "$REGISTRY_DIR" >/dev/null 2>&1 || true
+    chmod 0775 "$REGISTRY_DIR" >/dev/null 2>&1 || true
+    mkdir -p "$LOGS_DIR" >/dev/null 2>&1 || true
+    chmod 0775 "$LOGS_DIR" >/dev/null 2>&1 || true
 }
 
 set_infra_runtime_mode() {
@@ -457,23 +466,52 @@ migrate_legacy_state_file() {
 }
 
 migrate_legacy_state_layout() {
-    # Переносим legacy-файлы состояния из projects/ и dot-формата в централизованный state-каталог.
+    local legacy_state="$INFRA_DIR/state"
+    local legacy_logs="$INFRA_DIR/logs"
+
+    # Реестры проектов: projects/.registry/
     migrate_legacy_state_file "$PROJECTS_DIR/.hosts-registry.tsv" "$REGISTRY_FILE"
     migrate_legacy_state_file "$PROJECTS_DIR/.bitrix-core-registry.tsv" "$BITRIX_CORE_REGISTRY_FILE"
     migrate_legacy_state_file "$PROJECTS_DIR/.bitrix-bindings.tsv" "$BITRIX_BINDINGS_FILE"
     migrate_legacy_state_file "$PROJECTS_DIR/.bitrix-bindings.lock" "$BITRIX_BINDINGS_LOCK_DIR"
-    migrate_legacy_state_file "$PROJECTS_DIR/.hostctl.log" "$HOSTCTL_LOG_FILE"
+    migrate_legacy_state_file "$legacy_state/.hosts-registry.tsv" "$REGISTRY_FILE"
+    migrate_legacy_state_file "$legacy_state/hosts-registry.tsv" "$REGISTRY_FILE"
+    migrate_legacy_state_file "$legacy_state/.bitrix-core-registry.tsv" "$BITRIX_CORE_REGISTRY_FILE"
+    migrate_legacy_state_file "$legacy_state/bitrix-core-registry.tsv" "$BITRIX_CORE_REGISTRY_FILE"
+    migrate_legacy_state_file "$legacy_state/.bitrix-bindings.tsv" "$BITRIX_BINDINGS_FILE"
+    migrate_legacy_state_file "$legacy_state/bitrix-bindings.tsv" "$BITRIX_BINDINGS_FILE"
+    migrate_legacy_state_file "$legacy_state/.bitrix-bindings.lock" "$BITRIX_BINDINGS_LOCK_DIR"
 
-    migrate_legacy_state_file "$STATE_DIR/.hosts-registry.tsv" "$REGISTRY_FILE"
-    migrate_legacy_state_file "$STATE_DIR/.bitrix-core-registry.tsv" "$BITRIX_CORE_REGISTRY_FILE"
-    migrate_legacy_state_file "$STATE_DIR/.bitrix-bindings.tsv" "$BITRIX_BINDINGS_FILE"
-    migrate_legacy_state_file "$STATE_DIR/.bitrix-bindings.lock" "$BITRIX_BINDINGS_LOCK_DIR"
-    migrate_legacy_state_file "$STATE_DIR/.hostctl.log" "$HOSTCTL_LOG_FILE"
+    # Логи: logs/ (корень)
+    migrate_legacy_state_file "$PROJECTS_DIR/.hostctl.log" "$HOSTCTL_LOG_FILE"
+    migrate_legacy_state_file "$legacy_state/.hostctl.log" "$HOSTCTL_LOG_FILE"
+    migrate_legacy_state_file "$legacy_state/hostctl.log" "$HOSTCTL_LOG_FILE"
+    migrate_legacy_state_file "$legacy_logs/hostctl.log" "$HOSTCTL_LOG_FILE"
+    migrate_legacy_state_file "$legacy_state/devpanel-actions.log" "$LOGS_DIR/devpanel-actions.log"
+    migrate_legacy_state_file "$legacy_logs/devpanel-actions.log" "$LOGS_DIR/devpanel-actions.log"
+    migrate_legacy_state_file "$legacy_state/devpanel-jobs" "$LOGS_DIR/devpanel-jobs"
+    migrate_legacy_state_file "$legacy_logs/devpanel-jobs" "$LOGS_DIR/devpanel-jobs"
+    for f in "$legacy_state"/log-review-report-*.md "$legacy_logs"/log-review-report-*.md; do
+        [ -f "$f" ] || continue
+        migrate_legacy_state_file "$f" "$LOGS_DIR/$(basename "$f")"
+    done
+
+    # traefik-domains — в projects/.registry (данные о хостах)
+    migrate_legacy_state_file "$legacy_state/traefik-domains.txt" "$REGISTRY_DIR/traefik-domains.txt"
+    migrate_legacy_state_file "$legacy_state/traefik-domains.sha256" "$REGISTRY_DIR/traefik-domains.sha256"
+    migrate_legacy_state_file "$CONFIG_DIR/traefik-domains.txt" "$REGISTRY_DIR/traefik-domains.txt"
+    migrate_legacy_state_file "$CONFIG_DIR/traefik-domains.sha256" "$REGISTRY_DIR/traefik-domains.sha256"
+
+    # Инфра-конфиг: infra/config/ (infra-runtime-mode, update-operations)
+    migrate_legacy_state_file "$legacy_state/infra-runtime-mode" "$CONFIG_DIR/infra-runtime-mode"
+    migrate_legacy_state_file "$legacy_state/update-operations" "$CONFIG_DIR/update-operations"
+    migrate_legacy_state_file "$legacy_state/version-registry" "$CONFIG_DIR/version-registry"
+    migrate_legacy_state_file "$legacy_state/dev-tools.json" "$CONFIG_DIR/dev-tools.json"
 }
 
 cleanup_state_appledouble_files() {
     local candidate=""
-    for candidate in "$STATE_DIR"/._*; do
+    for candidate in "$CONFIG_DIR"/._*; do
         [ -e "$candidate" ] || continue
         rm -f "$candidate" >/dev/null 2>&1 || true
     done
@@ -4353,8 +4391,8 @@ collect_log_inventory() {
     ensure_registry
 
     append_log_inventory_entry "$inventory_file" "hostctl_operation_log" "$HOSTCTL_LOG_FILE" "file" "0" "Журнал операций hostctl."
-    append_log_inventory_entry "$inventory_file" "devpanel_action_log" "$STATE_DIR/devpanel-actions.log" "file" "0" "Журнал действий из DevPanel."
-    append_log_inventory_entry "$inventory_file" "devpanel_job_artifacts" "$STATE_DIR/devpanel-jobs" "dir" "0" "Фоновые job-артефакты DevPanel (.log/.json/.sh/.exit)."
+    append_log_inventory_entry "$inventory_file" "devpanel_action_log" "$LOGS_DIR/devpanel-actions.log" "file" "0" "Журнал действий из DevPanel."
+    append_log_inventory_entry "$inventory_file" "devpanel_job_artifacts" "$LOGS_DIR/devpanel-jobs" "dir" "0" "Фоновые job-артефакты DevPanel (.log/.json/.sh/.exit)."
 
     append_log_inventory_entry "$inventory_file" "legacy_root_logs" "$PROJECTS_DIR/.hostctl.log" "file" "0" "Legacy hostctl log в projects/ (подлежит миграции)."
     append_log_inventory_entry "$inventory_file" "legacy_root_logs" "$PROJECTS_DIR/.devpanel-actions.log" "file" "0" "Legacy DevPanel actions log в projects/."
@@ -4456,7 +4494,7 @@ build_log_review_report() {
         echo
         echo "Date (UTC): $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         echo "Mode: $([ "$dry_run" -eq 1 ] && echo "dry-run" || echo "apply")"
-        echo "State dir: \`$STATE_DIR\`"
+        echo "Logs dir: \`$LOGS_DIR\`"
         echo
         echo "## Decisions by Category"
         echo
@@ -4516,7 +4554,7 @@ review_logs_dialog() {
     fi
 
     echo "🔎 Log review session"
-    echo "State dir: $STATE_DIR"
+    echo "Logs dir: $LOGS_DIR"
     echo "Projects dir: $PROJECTS_DIR"
     echo
     echo "Примите решение по каждой категории логов."
@@ -4588,7 +4626,7 @@ review_logs_dialog() {
         done < "$inventory_file"
     done < "$decisions_file"
 
-    local report_file="$STATE_DIR/log-review-report-$(date -u +%Y%m%dT%H%M%SZ).md"
+    local report_file="$LOGS_DIR/log-review-report-$(date -u +%Y%m%dT%H%M%SZ).md"
     build_log_review_report "$inventory_file" "$decisions_file" "$report_file" "$dry_run"
 
     echo

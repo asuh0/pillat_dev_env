@@ -6,9 +6,9 @@ set -eEuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(dirname "$SCRIPT_DIR")"
-STATE_DIR="${HOSTCTL_STATE_DIR:-$INFRA_DIR/state}"
-VERSION_REGISTRY_DIR="${STATE_DIR}/version-registry"
-UPDATE_OPS_DIR="${STATE_DIR}/update-operations"
+CONFIG_DIR="${HOSTCTL_CONFIG_DIR:-$INFRA_DIR/config}"
+VERSION_REGISTRY_DIR="${CONFIG_DIR}/version-registry"
+UPDATE_OPS_DIR="${CONFIG_DIR}/update-operations"
 
 # --- T001: Version Record format ---
 # Fields: object_id, object_type, current_version, target_version, updated_at

@@ -11,8 +11,8 @@
 # Runtime/generated directories not required to build devpanel image
 projects
 projects/**
-infra/state
-infra/state/**
+infra/config
+infra/config/**
 logs
 logs/**
 kitty-specs

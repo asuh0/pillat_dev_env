@@ -16,12 +16,12 @@
 │   ├── scripts/              # hostctl.sh, create-project.sh, generate-ssl.sh, ...
 │   ├── templates/            # централизованные шаблоны (например, Dockerfile.php*)
 │   ├── devpanel/             # web UI (https://docker.dev)
-│   ├── state/                # runtime state: registry/jobs/action logs
+│   ├── config/               # инфра-конфиг (traefik-domains, infra-runtime-mode, update-operations)
 │   ├── ssl/
 │   └── grafana/
 ├── presets/                  # пресеты и контракт пресетов
 ├── projects/                 # каталоги хостов (каждый: www/, logs/, nginx/)
-├── logs/                     # логи инфраструктуры (traefik; логи проектов — в projects/*/logs/)
+├── logs/                     # логи инфраструктуры (traefik, hostctl, DevPanel; логи проектов — в projects/*/logs/)
 ├── shared-volumes/           # данные сервисов (не коммитятся)
 ├── kitty-specs/              # спецификации и артефакты фич
 ├── CONTRIBUTING.md
@@ -202,14 +202,22 @@ projects/<host>/
 
 ### Служебные артефакты
 
-Служебные runtime-артефакты вынесены в `infra/state/`:
-
+**Реестры проектов** — `projects/.registry/`:
 - `hosts-registry.tsv`
 - `bitrix-core-registry.tsv`
 - `bitrix-bindings.tsv`
+- `traefik-domains.txt`, `traefik-domains.sha256` — список доменов для TLS (из хостов)
+
+**Логи** — `logs/` (корень):
 - `hostctl.log`
 - `devpanel-actions.log`
 - `devpanel-jobs/`
+- `log-review-report-*.md`
+- `traefik/` — логи Traefik
+
+**Инфра-конфиг** — `infra/config/`:
+- `infra-runtime-mode` — primary/fallback (какой compose используется)
+- `update-operations/`, `version-registry/` — журнал операций update pipeline
 
 Ревизия логов выполняется в диалоговом режиме:
 
@@ -222,7 +230,7 @@ bash ./hostctl.sh logs-review
 
 - `--dry-run` — показать действия без удаления.
 
-После сессии формируется отчет в `infra/state/log-review-report-*.md`.
+После сессии формируется отчет в `logs/log-review-report-*.md`.
 
 ## Пресеты
 

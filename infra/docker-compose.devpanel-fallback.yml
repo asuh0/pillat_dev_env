@@ -8,7 +8,8 @@ volumes:
   grafana_data_fallback:
   loki_data_fallback:
   devpanel_projects:
-  devpanel_state:
+  devpanel_config:
+  devpanel_logs:
   traefik_tls_fallback:
     name: infra_traefik_tls_fallback
 
@@ -171,7 +172,8 @@ services:
       - "8088:80"
     volumes:
       - devpanel_projects:/projects
-      - devpanel_state:/state
+      - devpanel_config:/config
+      - devpanel_logs:/logs
       - /var/run/docker.sock:/var/run/docker.sock:rw
     networks:
       - infra_proxy

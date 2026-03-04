@@ -163,7 +163,8 @@ services:
     volumes:
       - ./devpanel/src:/var/www/html:ro
       - ../projects:/projects
-      - ./state:/state
+      - ../logs:/logs
+      - ./config:/config
       - ./ssl:/ssl:rw
       - ./scripts:/scripts:ro
       - ./templates:/templates:ro

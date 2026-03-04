@@ -17,7 +17,7 @@ fi
 # 2) Базовые каталоги для primary-режима (bind mounts).
 mkdir -p \
     "$DEV_DIR/projects" \
-    "$INFRA_DIR/state" \
+    "$INFRA_DIR/config" \
     "$DEV_DIR/logs/traefik" \
     "$DEV_DIR/shared-volumes/grafana-data" \
     "$DEV_DIR/shared-volumes/loki-data" \

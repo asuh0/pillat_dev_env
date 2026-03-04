@@ -5,7 +5,7 @@ set -eEuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(dirname "$SCRIPT_DIR")"
-STATE_DIR="${HOSTCTL_STATE_DIR:-$INFRA_DIR/state}"
+CONFIG_DIR="${HOSTCTL_CONFIG_DIR:-$INFRA_DIR/config}"
 INFRA_ENV_FILE="$INFRA_DIR/.env.global"
 COMPOSE_FILE="$INFRA_DIR/docker-compose.shared.yml"
 COMPONENT_SERVICE="adminer"
@@ -13,7 +13,7 @@ COMPONENT_IMAGE="adminer:latest"
 OBJECT_ID="adminer"
 OBJECT_TYPE="internal_app"
 
-export HOSTCTL_STATE_DIR="$STATE_DIR"
+export HOSTCTL_CONFIG_DIR="$CONFIG_DIR"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/update-lib.sh"
 
@@ -156,7 +156,7 @@ main() {
         esac
     done
 
-    mkdir -p "$STATE_DIR"
+    mkdir -p "$CONFIG_DIR"
     mkdir -p "$VERSION_REGISTRY_DIR" "$UPDATE_OPS_DIR"
 
     if [ "$target" = "latest" ] || [ -z "$target" ]; then

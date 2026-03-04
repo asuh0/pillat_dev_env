@@ -19,8 +19,8 @@ projects/
 # Логи и данные
 logs/
 shared-volumes/
-infra/state/*
-!infra/state/.gitkeep
+infra/config/*
+!infra/config/.gitkeep
 
 # Системные и временные файлы
 *.log

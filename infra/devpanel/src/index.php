@@ -23,42 +23,50 @@ if (!is_dir($projectsDir)) {
     $projectsDir = realpath(__DIR__ . '/../../projects');
 }
 
-// Путь к состоянию/служебным данным (реестры, логи действий, фоновые job-артефакты)
-$stateDir = '/state';
-if (!is_dir($stateDir)) {
-    $fallbackStateDir = realpath(__DIR__ . '/../../state');
-    if (is_string($fallbackStateDir) && $fallbackStateDir !== '' && is_dir($fallbackStateDir)) {
-        $stateDir = $fallbackStateDir;
-    } elseif ($projectsDir && is_dir($projectsDir)) {
-        $stateDir = rtrim($projectsDir, '/') . '/.state';
+// Реестры проектов: projects/.registry/
+$registryDir = $projectsDir ? rtrim($projectsDir, '/') . '/.registry' : '';
+
+// Логи: logs/ (корень workspace, или /logs в контейнере)
+$logsDir = '/logs';
+if (!is_dir($logsDir)) {
+    $fallbackLogsDir = realpath(__DIR__ . '/../../../logs');
+    if (is_string($fallbackLogsDir) && $fallbackLogsDir !== '' && is_dir($fallbackLogsDir)) {
+        $logsDir = $fallbackLogsDir;
     } else {
-        $stateDir = '';
+        $logsDir = '';
     }
 }
-if ($stateDir !== '' && !is_dir($stateDir)) {
-    @mkdir($stateDir, 0775, true);
+if ($logsDir !== '' && !is_dir($logsDir)) {
+    @mkdir($logsDir, 0775, true);
 }
 
-function ensureStateDir($stateDir) {
-    if (!is_string($stateDir) || $stateDir === '') {
+// Legacy: для миграции из infra/state и infra/logs
+$legacyStateDir = realpath(__DIR__ . '/../../state') ?: '';
+$legacyLogsDir = realpath(__DIR__ . '/../../logs') ?: '';
+
+function ensureStateDir($dir) {
+    if (!is_string($dir) || $dir === '') {
         return false;
     }
-    if (is_dir($stateDir)) {
-        @chmod($stateDir, 0775);
+    if (is_dir($dir)) {
+        @chmod($dir, 0775);
         return true;
     }
-    if (@mkdir($stateDir, 0775, true) || is_dir($stateDir)) {
-        @chmod($stateDir, 0775);
+    if (@mkdir($dir, 0775, true) || is_dir($dir)) {
+        @chmod($dir, 0775);
         return true;
     }
     return false;
 }
 
-function getStatePathCandidates($stateDir, $projectsDir, $legacyName, $newName) {
+function getRegistryPathCandidates($registryDir, $legacyStateDir, $projectsDir, $legacyName, $newName) {
     $candidates = [];
-    if (is_string($stateDir) && $stateDir !== '') {
-        $candidates[] = rtrim($stateDir, '/') . '/' . $newName;
-        $candidates[] = rtrim($stateDir, '/') . '/' . $legacyName;
+    if (is_string($registryDir) && $registryDir !== '') {
+        $candidates[] = rtrim($registryDir, '/') . '/' . $newName;
+    }
+    if (is_string($legacyStateDir) && $legacyStateDir !== '') {
+        $candidates[] = rtrim($legacyStateDir, '/') . '/' . $newName;
+        $candidates[] = rtrim($legacyStateDir, '/') . '/' . $legacyName;
     }
     if (is_string($projectsDir) && $projectsDir !== '') {
         $candidates[] = rtrim($projectsDir, '/') . '/' . $legacyName;
@@ -157,27 +165,47 @@ function migrateLegacyStateFile($legacyPath, $targetPath) {
     }
 }
 
-function migrateLegacyStateLayout($projectsDir, $stateDir) {
-    if (!ensureStateDir($stateDir) || !is_string($projectsDir) || $projectsDir === '') {
+function migrateLegacyStateLayout($projectsDir, $registryDir, $logsDir, $legacyStateDir, $legacyLogsDir) {
+    if (!is_string($projectsDir) || $projectsDir === '') {
         return;
     }
+    $ensureDir = static function ($dir) {
+        if (!is_string($dir) || $dir === '') return false;
+        if (is_dir($dir)) { @chmod($dir, 0775); return true; }
+        return @mkdir($dir, 0775, true) || is_dir($dir);
+    };
 
-    $legacyToNew = [
-        '.hosts-registry.tsv' => 'hosts-registry.tsv',
-        '.bitrix-core-registry.tsv' => 'bitrix-core-registry.tsv',
-        '.bitrix-bindings.tsv' => 'bitrix-bindings.tsv',
-        '.devpanel-actions.log' => 'devpanel-actions.log',
-        '.devpanel-jobs' => 'devpanel-jobs',
-    ];
+    $registryTarget = $registryDir ? rtrim($registryDir, '/') . '/' : '';
+    $logsTarget = $logsDir ? rtrim($logsDir, '/') . '/' : '';
 
-    foreach ($legacyToNew as $legacyName => $newName) {
-        $legacyPath = rtrim($projectsDir, '/') . '/' . $legacyName;
-        $targetPath = rtrim($stateDir, '/') . '/' . $newName;
-        migrateLegacyStateFile($legacyPath, $targetPath);
+    $registryFiles = ['.hosts-registry.tsv' => 'hosts-registry.tsv', '.bitrix-core-registry.tsv' => 'bitrix-core-registry.tsv', '.bitrix-bindings.tsv' => 'bitrix-bindings.tsv'];
+    foreach ($registryFiles as $legacyName => $newName) {
+        if ($registryTarget && $ensureDir($registryDir)) {
+            $targetPath = $registryTarget . $newName;
+            migrateLegacyStateFile(rtrim($projectsDir, '/') . '/' . $legacyName, $targetPath);
+            if ($legacyStateDir) {
+                migrateLegacyStateFile(rtrim($legacyStateDir, '/') . '/' . $newName, $targetPath);
+                migrateLegacyStateFile(rtrim($legacyStateDir, '/') . '/' . $legacyName, $targetPath);
+            }
+        }
+    }
+
+    $logFiles = ['.devpanel-actions.log' => 'devpanel-actions.log', '.devpanel-jobs' => 'devpanel-jobs'];
+    foreach ($logFiles as $legacyName => $newName) {
+        if ($logsTarget && $ensureDir($logsDir)) {
+            $targetPath = $logsTarget . $newName;
+            migrateLegacyStateFile(rtrim($projectsDir, '/') . '/' . $legacyName, $targetPath);
+            if ($legacyStateDir) {
+                migrateLegacyStateFile(rtrim($legacyStateDir, '/') . '/' . $newName, $targetPath);
+            }
+            if ($legacyLogsDir) {
+                migrateLegacyStateFile(rtrim($legacyLogsDir, '/') . '/' . $newName, $targetPath);
+            }
+        }
     }
 }
 
-migrateLegacyStateLayout((string)$projectsDir, (string)$stateDir);
+migrateLegacyStateLayout((string)$projectsDir, (string)$registryDir, (string)$logsDir, (string)$legacyStateDir, (string)$legacyLogsDir);
 
 $projects = [];
 if ($projectsDir && is_dir($projectsDir)) {
@@ -293,9 +321,9 @@ function parseEnvFile($projectPath) {
     return $env;
 }
 
-function parseHostsRegistry($stateDir, $projectsDir) {
+function parseHostsRegistry($registryDir, $legacyStateDir, $projectsDir) {
     $registry = [];
-    $path = resolveReadableStatePath(getStatePathCandidates($stateDir, $projectsDir, '.hosts-registry.tsv', 'hosts-registry.tsv'));
+    $path = resolveReadableStatePath(getRegistryPathCandidates($registryDir, $legacyStateDir, $projectsDir, '.hosts-registry.tsv', 'hosts-registry.tsv'));
     if ($path === null) {
         return $registry;
     }
@@ -319,10 +347,10 @@ function parseHostsRegistry($stateDir, $projectsDir) {
     return $registry;
 }
 
-function parseBitrixCoreRegistry($stateDir, $projectsDir) {
+function parseBitrixCoreRegistry($registryDir, $legacyStateDir, $projectsDir) {
     $byCoreId = [];
     $byOwnerHost = [];
-    $path = resolveReadableStatePath(getStatePathCandidates($stateDir, $projectsDir, '.bitrix-core-registry.tsv', 'bitrix-core-registry.tsv'));
+    $path = resolveReadableStatePath(getRegistryPathCandidates($registryDir, $legacyStateDir, $projectsDir, '.bitrix-core-registry.tsv', 'bitrix-core-registry.tsv'));
     if ($path === null) {
         return [$byCoreId, $byOwnerHost];
     }
@@ -351,10 +379,10 @@ function parseBitrixCoreRegistry($stateDir, $projectsDir) {
     return [$byCoreId, $byOwnerHost];
 }
 
-function parseBitrixBindingsRegistry($stateDir, $projectsDir) {
+function parseBitrixBindingsRegistry($registryDir, $legacyStateDir, $projectsDir) {
     $byHost = [];
     $linksByCore = [];
-    $path = resolveReadableStatePath(getStatePathCandidates($stateDir, $projectsDir, '.bitrix-bindings.tsv', 'bitrix-bindings.tsv'));
+    $path = resolveReadableStatePath(getRegistryPathCandidates($registryDir, $legacyStateDir, $projectsDir, '.bitrix-bindings.tsv', 'bitrix-bindings.tsv'));
     if ($path === null) {
         return [$byHost, $linksByCore];
     }
@@ -379,12 +407,12 @@ function parseBitrixBindingsRegistry($stateDir, $projectsDir) {
     return [$byHost, $linksByCore];
 }
 
-function logDevpanelAction($stateDir, $action, $status, $context = []) {
-    if (!ensureStateDir($stateDir)) {
+function logDevpanelAction($logsDir, $action, $status, $context = []) {
+    if (!ensureStateDir($logsDir)) {
         return;
     }
 
-    $logFile = rtrim($stateDir, '/') . '/devpanel-actions.log';
+    $logFile = rtrim($logsDir, '/') . '/devpanel-actions.log';
     $timestamp = gmdate('Y-m-d\TH:i:s\Z');
     $record = [
         'ts' => $timestamp,
@@ -826,12 +854,12 @@ try {
 }
 $headerProjectSummary = getProjectsStatusSummary($projects);
 
-$hostsRegistry = parseHostsRegistry($stateDir, $projectsDir);
+$hostsRegistry = parseHostsRegistry($registryDir, $legacyStateDir, $projectsDir);
 [$bitrixCoreById, $bitrixCoreByOwner] = ($projectsDir && is_dir($projectsDir))
-    ? parseBitrixCoreRegistry($stateDir, $projectsDir)
+    ? parseBitrixCoreRegistry($registryDir, $legacyStateDir, $projectsDir)
     : [[], []];
 [$bitrixBindingByHost, $bitrixLinksByCore] = ($projectsDir && is_dir($projectsDir))
-    ? parseBitrixBindingsRegistry($stateDir, $projectsDir)
+    ? parseBitrixBindingsRegistry($registryDir, $legacyStateDir, $projectsDir)
     : [[], []];
 
 // Обработка действий
@@ -922,7 +950,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     // Для AJAX: запускаем создание в фоне, чтобы не рвать долгий HTTP-запрос
                     if ($isAjax) {
-                        $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+                        $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
                         if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                             $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                             if (!headers_sent()) {
@@ -992,7 +1020,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                         $meta['pid'] = $pid;
                         @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                        logDevpanelAction($stateDir, 'create', 'pending', [
+                        logDevpanelAction($logsDir, 'create', 'pending', [
                             'project' => $projectName,
                             'job_id' => $jobId,
                             'pid' => $pid,
@@ -1104,7 +1132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         'execution_time' => $executionTime,
                         'exit_code' => $return
                     ];
-                    logDevpanelAction($stateDir, 'create', $return === 0 ? 'success' : 'error', [
+                    logDevpanelAction($logsDir, 'create', $return === 0 ? 'success' : 'error', [
                         'project' => $projectName,
                         'preset' => $preset,
                         'bitrix_type' => $preset === 'bitrix' ? $bitrixType : null,
@@ -1142,7 +1170,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                 } else {
                     $errorMsg = 'CLI hostctl не найден в контейнере devpanel (/scripts/hostctl.sh)';
-                    logDevpanelAction($stateDir, 'create', 'error', [
+                    logDevpanelAction($logsDir, 'create', 'error', [
                         'project' => $projectName,
                         'reason' => 'hostctl_not_found',
                     ]);
@@ -1155,7 +1183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
             } else {
                 $errorMsg = 'Некорректное имя проекта (только латинские буквы, цифры, дефисы и точки)';
-                logDevpanelAction($stateDir, 'create', 'error', [
+                logDevpanelAction($logsDir, 'create', 'error', [
                     'project' => $projectName,
                     'reason' => 'invalid_project_name',
                 ]);
@@ -1191,7 +1219,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 exit;
             }
 
-            $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1289,7 +1317,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             $headLines = array_slice($allLines, 0, 25);
                         }
                     }
-                    logDevpanelAction($stateDir, 'create', $exitCode === 0 ? 'success' : 'error', [
+                    logDevpanelAction($logsDir, 'create', $exitCode === 0 ? 'success' : 'error', [
                         'project' => $meta['project'] ?? null,
                         'job_id' => $jobId,
                         'command' => $meta['command'] ?? null,
@@ -1334,7 +1362,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         'type' => 'success',
                         'message' => "Проект {$projectName} удален",
                     ];
-                    logDevpanelAction($stateDir, 'delete', 'success', [
+                    logDevpanelAction($logsDir, 'delete', 'success', [
                         'project' => $projectName,
                         'command' => $cmd,
                         'output_head' => $outputHead,
@@ -1348,7 +1376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         'type' => 'warning',
                         'message' => "Проект {$projectName} уже отсутствует. Повторное удаление не требуется.",
                     ];
-                    logDevpanelAction($stateDir, 'delete', 'warning', [
+                    logDevpanelAction($logsDir, 'delete', 'warning', [
                         'project' => $projectName,
                         'reason' => 'already_missing',
                         'command' => $cmd,
@@ -1363,7 +1391,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         'type' => 'warning',
                         'message' => $guardMessage,
                     ];
-                    logDevpanelAction($stateDir, 'delete', 'warning', [
+                    logDevpanelAction($logsDir, 'delete', 'warning', [
                         'project' => $projectName,
                         'reason' => 'delete_guard',
                         'command' => $cmd,
@@ -1374,14 +1402,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         'type' => 'error',
                         'message' => "Ошибка: " . $outputText,
                     ];
-                    logDevpanelAction($stateDir, 'delete', 'error', [
+                    logDevpanelAction($logsDir, 'delete', 'error', [
                         'project' => $projectName,
                         'command' => $cmd,
                         'output_head' => $outputHead,
                     ]);
                 }
             } elseif (!file_exists($hostctlScript)) {
-                logDevpanelAction($stateDir, 'delete', 'error', [
+                logDevpanelAction($logsDir, 'delete', 'error', [
                     'project' => $projectName,
                     'reason' => 'hostctl_not_found',
                 ]);
@@ -1411,7 +1439,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             // По аналогии с set-php: при AJAX запускаем start/restart в фоне и отдаём job_id для опроса лога
             if (($action === 'start' || $action === 'restart') && $isAjax) {
-                $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
                 if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                     $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                     if (!headers_sent()) {
@@ -1467,7 +1495,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 $meta['pid'] = $pid;
                 @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                logDevpanelAction($stateDir, $action, 'pending', ['project' => $projectName, 'job_id' => $jobId, 'pid' => $pid]);
+                logDevpanelAction($logsDir, $action, 'pending', ['project' => $projectName, 'job_id' => $jobId, 'pid' => $pid]);
                 $actionResult = [
                     'type' => 'pending',
                     'status' => 'running',
@@ -1491,13 +1519,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     'type' => 'error',
                     'message' => 'Ошибка выполнения команды: ' . implode("\n", array_slice($output, 0, 15))
                 ];
-                logDevpanelAction($stateDir, $action, 'error', [
+                logDevpanelAction($logsDir, $action, 'error', [
                     'project' => $projectName,
                     'command' => $cmd,
                     'output_head' => array_slice($output, 0, 15),
                 ]);
             } else {
-                logDevpanelAction($stateDir, $action, 'success', [
+                logDevpanelAction($logsDir, $action, 'success', [
                     'project' => $projectName,
                     'command' => $cmd,
                 ]);
@@ -1529,7 +1557,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 exit;
             }
-            $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1603,7 +1631,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             $headLines = array_slice($allLines, 0, 25);
                         }
                     }
-                    logDevpanelAction($stateDir, $meta['action'] ?? $action, $exitCode === 0 ? 'success' : 'error', [
+                    logDevpanelAction($logsDir, $meta['action'] ?? $action, $exitCode === 0 ? 'success' : 'error', [
                         'project' => $meta['project'] ?? null,
                         'job_id' => $jobId,
                         'output_head' => $headLines,
@@ -1648,7 +1676,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' set-php ' . escapeshellarg($projectName) . ' ' . escapeshellarg($phpVersion) . ' 2>&1';
 
             if ($isAjax) {
-                $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
                 if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                     $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                     if (!headers_sent()) {
@@ -1706,7 +1734,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 $meta['pid'] = $pid;
                 @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                logDevpanelAction($stateDir, 'set-php', 'pending', [
+                logDevpanelAction($logsDir, 'set-php', 'pending', [
                     'project' => $projectName,
                     'php_version' => $phpVersion,
                     'job_id' => $jobId,
@@ -1732,12 +1760,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             exec($cmd, $output, $return);
             $outputText = implode("\n", array_slice($output, 0, 30));
             if ($return === 0) {
-                logDevpanelAction($stateDir, 'set-php', 'success', ['project' => $projectName, 'php_version' => $phpVersion]);
+                logDevpanelAction($logsDir, 'set-php', 'success', ['project' => $projectName, 'php_version' => $phpVersion]);
                 $actionResult = ['type' => 'success', 'message' => "Проект {$projectName} переключён на PHP {$phpVersion}."];
                 header('Location: ' . $_SERVER['PHP_SELF']);
                 exit;
             }
-            logDevpanelAction($stateDir, 'set-php', 'error', ['project' => $projectName, 'php_version' => $phpVersion, 'output_head' => array_slice($output, 0, 15)]);
+            logDevpanelAction($logsDir, 'set-php', 'error', ['project' => $projectName, 'php_version' => $phpVersion, 'output_head' => array_slice($output, 0, 15)]);
             $actionResult = ['type' => 'error', 'message' => 'Ошибка переключения: ' . $outputText];
             break;
 
@@ -1762,7 +1790,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 exit;
             }
-            $jobsDir = $stateDir !== '' ? rtrim((string)$stateDir, '/') . '/devpanel-jobs' : '';
+            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1837,7 +1865,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             $headLines = array_slice($allLines, 0, 25);
                         }
                     }
-                    logDevpanelAction($stateDir, 'set-php', $exitCode === 0 ? 'success' : 'error', [
+                    logDevpanelAction($logsDir, 'set-php', $exitCode === 0 ? 'success' : 'error', [
                         'project' => $meta['project'] ?? null,
                         'php_version' => $meta['php_version'] ?? null,
                         'job_id' => $jobId,

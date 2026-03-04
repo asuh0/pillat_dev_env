@@ -3,7 +3,8 @@
 # MVP: xdebug, adminer
 set -euo pipefail
 
-DEV_TOOLS_STATE_FILE="${HOSTCTL_STATE_DIR:-${STATE_DIR:-}}/dev-tools.json"
+_DEVTOOLS_INFRA_DIR="${INFRA_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+DEV_TOOLS_STATE_FILE="${HOSTCTL_CONFIG_DIR:-$_DEVTOOLS_INFRA_DIR/config}/dev-tools.json"
 DEV_TOOLS_MVP="xdebug adminer"
 
 dev_tools_get() {

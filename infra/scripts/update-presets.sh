@@ -6,12 +6,12 @@ set -eEuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(dirname "$SCRIPT_DIR")"
 DEV_DIR="$(dirname "$INFRA_DIR")"
-STATE_DIR="${HOSTCTL_STATE_DIR:-$INFRA_DIR/state}"
+CONFIG_DIR="${HOSTCTL_CONFIG_DIR:-$INFRA_DIR/config}"
 PRESETS_DIR="${PRESETS_DIR:-$DEV_DIR/presets}"
 OBJECT_ID="preset_scripts"
 OBJECT_TYPE="preset_scripts"
 
-export HOSTCTL_STATE_DIR="$STATE_DIR"
+export HOSTCTL_CONFIG_DIR="$CONFIG_DIR"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/update-lib.sh"
 
@@ -92,7 +92,7 @@ _presets_rollback() {
 }
 
 main() {
-    mkdir -p "$STATE_DIR"
+    mkdir -p "$CONFIG_DIR"
     mkdir -p "$VERSION_REGISTRY_DIR" "$UPDATE_OPS_DIR"
 
     git -C "$DEV_DIR" fetch origin 2>/dev/null || true
