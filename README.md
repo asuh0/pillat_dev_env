@@ -239,8 +239,42 @@ bash ./hostctl.sh logs-review
 
 ## Bitrix Multisite
 
-Поддержка kernel/ext_kernel/link: общее ядро, симлинки shared paths, guard при удалении core.  
-Runbook: `infra/docs/bitrix-multisite-runbook.md`
+Поддержка kernel/ext_kernel/link: общее ядро, симлинки shared paths, guard при удалении core.
+
+### Симлинки между ядром и link-хостами
+
+Ядро монтируется в `/var/core-<id>/www`, симлинки в `www` link-хоста указывают на этот путь. Так путь одинаков и в контейнере, и на хосте — IDE видит `bitrix`, `upload`, `images` внутри проекта.
+
+**Структура:**
+- Ядро (core): `projects/<core>/www/{bitrix,upload,images}` — реальные каталоги.
+- Link-хост: `projects/<link>/www/{bitrix,upload,images}` — симлинки → `/var/core-<id>/www/...`.
+- В контейнере: volume mount `../core/www/bitrix` → `/var/core-<id>/www/bitrix`.
+
+**Для IDE (чтобы видеть файлы ядра в link-проекте):**
+
+На macOS требуется `sudo` (создание `/var/core-<id>`):
+
+```bash
+cd infra/scripts
+sudo ./link-setup-ide.sh core-shintyre
+```
+
+Замените `core-shintyre` на ваш `core_id`. Скрипт создаёт `/var/core-shintyre` → `projects/shintyre` (чтобы `/var/core-shintyre/www/bitrix` резолвился в `projects/shintyre/www/bitrix`).
+
+**Для уже существующих link-хостов** (если симлинки отсутствуют или сломаны):
+
+1. Сначала создайте `/var/core-<id>` для IDE: `sudo ./link-setup-ide.sh core-<id>`
+2. Затем создайте симлинки в `www`:
+
+```bash
+cd projects/<link-host>/www
+rm -f bitrix upload images
+ln -s /var/core-<id>/www/bitrix bitrix
+ln -s /var/core-<id>/www/upload upload
+ln -s /var/core-<id>/www/images images
+```
+
+**Для новых link-хостов** симлинки создаются автоматически при `hostctl create`.
 
 ## Карта документации
 

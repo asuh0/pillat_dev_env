@@ -877,6 +877,7 @@ rewrite_compose_paths_for_daemon() {
 
     awk \
         -v host_project_dir="$host_project_dir" \
+        -v host_projects_dir="$host_projects_dir" \
         -v host_logs_dir="$host_logs_dir" \
         -v host="$host" '
         {
@@ -927,6 +928,12 @@ rewrite_compose_paths_for_daemon() {
             }
             if ($0 ~ /^[[:space:]]*device:[[:space:]]*\$\{PWD\}\/db-postgres[[:space:]]*$/) {
                 print "      device: \"" host_project_dir "/db-postgres\""
+                next
+            }
+            # Core volumes для link: ../core_host -> host_projects_dir/core_host
+            if ($0 ~ /"\.\.\/[^/]*\/www\/(bitrix|upload|images)"/) {
+                sub(/\"\.\.\//, "\"" host_projects_dir "/", $0)
+                print
                 next
             }
             print
@@ -1076,27 +1083,42 @@ else:
 PY
 }
 
-# Добавляет volume mounts core в link-хост, чтобы контейнер видел bitrix/upload/images
-# (симлинки на хосте не работают в Docker — target вне mount)
+# Добавляет volume mounts core в link-хост (подход Bitrix Docker: core в /var/core-<id>/www,
+# симлинки в контейнере и на хосте для IDE). См. https://gitlab.com/bitrix-docker/server/-/tree/master#многосайтовая-конфигурация
 inject_link_core_volumes() {
     local compose_file="$1"
     local core_owner_host="$2"
+    local core_id="${3:-}"
     [ -f "$compose_file" ] || return 0
     require_python3 required "inject_link_core_volumes" || return 1
 
-    python3 - "$compose_file" "$core_owner_host" <<'PY'
+    # core_path_id для /var/core-<id> (короткое имя: core-shintyre -> shintyre)
+    local core_path_id="${core_id:-$core_owner_host}"
+    core_path_id="${core_path_id#core-}"
+    core_path_id="$(echo "$core_path_id" | tr '.' '-')"
+
+    python3 - "$compose_file" "$core_owner_host" "$core_path_id" <<'PY'
 import pathlib
 import re
 import sys
 
 compose_path = pathlib.Path(sys.argv[1])
 core_owner_host = sys.argv[2]
+core_path_id = sys.argv[3]
 core_prefix = f"../{core_owner_host}/www"
+core_mount_prefix = f"/var/core-{core_path_id}/www"
 shared_paths = ["bitrix", "upload", "images"]
 
 text = compose_path.read_text(encoding="utf-8")
-# Идемпотентность: уже есть core mounts — не добавлять
+# Идемпотентность: уже есть core mounts в новом формате — не добавлять
+if core_mount_prefix in text:
+    sys.exit(0)
+# Миграция: заменить старый формат (mount в /opt/www/bitrix) на новый (/var/core-xxx)
 if "/opt/www/bitrix" in text:
+    for p in shared_paths:
+        text = text.replace(f':/opt/www/{p}"', f':{core_mount_prefix}/{p}"')
+        text = text.replace(f':/opt/www/{p}:ro"', f':{core_mount_prefix}/{p}:ro"')
+    compose_path.write_text(text, encoding="utf-8")
     sys.exit(0)
 
 lines = text.splitlines()
@@ -1106,43 +1128,43 @@ i = 0
 while i < len(lines):
     line = lines[i]
     result.append(line)
-    # После "- ./www:/opt/www" или "- .../www:/opt/www:ro" добавляем core mounts
+    # После "- ./www:/opt/www" добавляем core mounts в /var/core-<id>/www (не в /opt/www)
     if re.search(r'-\s+["\']?[^"\']*www["\']?\s*:\s*/opt/www', line) and 'bitrix' not in line:
         indent = len(line) - len(line.lstrip())
         pad = " " * indent
         is_ro = ":ro" in line
         suffix = ":ro" if is_ro else ""
         for p in shared_paths:
-            result.append(f'{pad}- "{core_prefix}/{p}:/opt/www/{p}{suffix}"')
+            result.append(f'{pad}- "{core_prefix}/{p}:{core_mount_prefix}/{p}{suffix}"')
     i += 1
 
 compose_path.write_text("\n".join(result) + "\n", encoding="utf-8")
 PY
 }
 
-# Bitrix multisite path map (T019):
-#   Shared paths (symlinks link->core): bitrix, upload, images
-#   Site-specific (own dir per link):   local
-#   Core: <core_host>/src/{bitrix,upload,images,local}
-#   Link: <link_host>/src/{bitrix->core, upload->core, images->core, local}
+# Bitrix multisite path map (T019), подход Bitrix Docker:
+#   Симлинки в www указывают на /var/core-<id>/www/<path> — путь работает и в контейнере (mount),
+#   и на хосте (после создания /var/core-<id> -> core/www, на macOS: sudo).
+#   Для IDE: sudo ln -sf "$(realpath projects/<core>/www)" /var/core-<id>
 prepare_link_shared_paths() {
     local core_host="$1"
     local link_host="$2"
-    local core_src="$PROJECTS_DIR/$core_host/www"
+    local core_id="${3:-$core_host}"
+    local core_path_id=""
+    core_path_id="${core_id#core-}"
+    core_path_id="$(echo "$core_path_id" | tr '.' '-')"
     local link_src="$PROJECTS_DIR/$link_host/www"
     local shared_paths=(bitrix upload images)
     local created_symlinks=()
     local path=""
-    local source_path=""
     local target_link=""
+    # Путь в контейнере и на хосте (после создания /var/core-<id>)
+    local symlink_target_prefix="/var/core-${core_path_id}/www"
 
-    mkdir -p "$core_src" "$link_src" "$link_src/local"
+    mkdir -p "$link_src" "$link_src/local"
 
     for path in "${shared_paths[@]}"; do
-        source_path="$core_src/$path"
         target_link="$link_src/$path"
-
-        mkdir -p "$source_path"
 
         if [ -L "$target_link" ]; then
             rm -f "$target_link"
@@ -1150,7 +1172,7 @@ prepare_link_shared_paths() {
             rm -rf "$target_link"
         fi
 
-        if ! ln -s "$source_path" "$target_link"; then
+        if ! ln -s "${symlink_target_prefix}/${path}" "$target_link"; then
             local created_link=""
             for created_link in "${created_symlinks[@]}"; do
                 rm -f "$created_link" >/dev/null 2>&1 || true
@@ -3155,14 +3177,14 @@ EOF
             fi
             rm -rf "$project_dir/db-mysql" "$project_dir/db-postgres" >/dev/null 2>&1 || true
 
-            if ! prepare_link_shared_paths "$core_owner_host" "$host"; then
+            if ! prepare_link_shared_paths "$core_owner_host" "$host" "$core_id"; then
                 cleanup_failed_host_create "$host" "$project_dir"
                 [ "$lock_acquired" -eq 1 ] && release_bindings_lock
                 fail_with_code "link_shared_paths_failed" "Не удалось подготовить симлинки shared paths для link-хоста."
                 exit 1
             fi
 
-            if ! inject_link_core_volumes "$project_dir/docker-compose.yml" "$core_owner_host"; then
+            if ! inject_link_core_volumes "$project_dir/docker-compose.yml" "$core_owner_host" "$core_id"; then
                 cleanup_failed_host_create "$host" "$project_dir"
                 [ "$lock_acquired" -eq 1 ] && release_bindings_lock
                 fail_with_code "link_volumes_failed" "Не удалось добавить volume mounts core в link-хост."
@@ -3555,7 +3577,16 @@ FPMEOF
             local core_dir_for_volumes=""
             core_dir_for_volumes="$(resolve_host_to_project_dir "$link_core_owner" "$domain_suffix")"
             if [ -d "$PROJECTS_DIR/$core_dir_for_volumes" ]; then
-                inject_link_core_volumes "$compose_file" "$core_dir_for_volumes" 2>/dev/null || true
+                inject_link_core_volumes "$compose_file" "$core_dir_for_volumes" "$link_core_id" 2>/dev/null || true
+            fi
+        fi
+    else
+        # Fallback: миграция при наличии старого формата в compose (host не в bindings)
+        local core_from_compose=""
+        if grep -q '/opt/www/bitrix' "$compose_file" 2>/dev/null; then
+            core_from_compose="$(grep -oE '\.\./[^/]+/www/bitrix' "$compose_file" 2>/dev/null | head -1 | cut -d/ -f2)"
+            if [ -n "$core_from_compose" ] && [ -d "$PROJECTS_DIR/$core_from_compose" ]; then
+                inject_link_core_volumes "$compose_file" "$core_from_compose" "core-$core_from_compose" 2>/dev/null || true
             fi
         fi
     fi
