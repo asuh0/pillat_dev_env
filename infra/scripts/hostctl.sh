@@ -3667,8 +3667,12 @@ start_host() {
     chmod 777 "$project_dir/logs/php" 2>/dev/null || true
 
     # Для старых проектов: создать php-fpm-error-log.conf, чтобы FPM писал ошибки в файл (пул переопределяет php.ini).
-    if [ ! -f "$project_dir/php-fpm-error-log.conf" ]; then
-        cat > "$project_dir/php-fpm-error-log.conf" <<'FPMEOF'
+    local fpm_conf="$project_dir/php-fpm-error-log.conf"
+    if [ -d "$fpm_conf" ]; then
+        rm -rf "$fpm_conf"
+    fi
+    if [ ! -f "$fpm_conf" ]; then
+        cat > "$fpm_conf" <<'FPMEOF'
 [www]
 php_admin_value[error_log] = /var/log/php/error.log
 php_admin_flag[log_errors] = on
