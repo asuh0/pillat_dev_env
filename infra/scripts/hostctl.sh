@@ -1229,6 +1229,36 @@ compose_path.write_text(text, encoding="utf-8")
 PY
 }
 
+# Применяет nginx-конфиг для link-проекта (alias /var/core-<id>/, @bitrix через urlrewrite ядра).
+inject_link_nginx_config() {
+    local project_dir="$1"
+    local link_host="$2"
+    local core_owner_host="$3"
+    local core_id="${4:-}"
+    local nginx_conf="$project_dir/nginx/site.conf"
+    [ -d "$project_dir/nginx" ] || mkdir -p "$project_dir/nginx"
+
+    local core_path_id="${core_id:-$core_owner_host}"
+    core_path_id="${core_path_id#core-}"
+    core_path_id="$(echo "$core_path_id" | tr '.' '-')"
+
+    local php_upstream=""
+    php_upstream="$(build_project_php_upstream "$link_host")"
+
+    local template_file="$DEV_DIR/presets/bitrix/nginx-link.conf.template"
+    [ -f "$template_file" ] || { echo "Ошибка: шаблон $template_file не найден." >&2; return 1; }
+
+    if ! sed -e "s|{{PROJECT_NAME}}|$link_host|g" \
+        -e "s|{{PHP_UPSTREAM}}|$php_upstream|g" \
+        -e "s|{{CORE_PATH_ID}}|$core_path_id|g" \
+        "$template_file" > "$nginx_conf"; then
+        echo "Ошибка: не удалось записать nginx конфиг." >&2
+        return 1
+    fi
+    grep -q "alias /var/core-$core_path_id/" "$nginx_conf" || { echo "Ошибка: nginx конфиг не содержит ожидаемый alias." >&2; return 1; }
+    return 0
+}
+
 # Bitrix multisite (подход Bitrix Docker): volumes в compose, симлинки в контейнере (entrypoint).
 # На хосте — симлинки для IDE (link-setup-ide создаёт /var/core-<id> -> projects/<core>/www).
 prepare_link_shared_paths() {
@@ -3297,6 +3327,13 @@ EOF
                 cleanup_failed_host_create "$host" "$project_dir"
                 [ "$lock_acquired" -eq 1 ] && release_bindings_lock
                 fail_with_code "link_volumes_failed" "Не удалось добавить volume mounts core в link-хост."
+                exit 1
+            fi
+
+            if ! inject_link_nginx_config "$project_dir" "$host" "$core_owner_host" "$core_id"; then
+                cleanup_failed_host_create "$host" "$project_dir"
+                [ "$lock_acquired" -eq 1 ] && release_bindings_lock
+                fail_with_code "link_nginx_failed" "Не удалось применить nginx-конфиг для link-хост."
                 exit 1
             fi
 
