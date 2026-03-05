@@ -25,8 +25,11 @@ server {
         alias /var/core-{{CORE_PATH_ID}}/images/;
     }
 
-    # Все «нефайловые» запросы — в urlrewrite с сохранением REQUEST_URI.
+    # Главная / — в index.php (как на проде), остальное — в urlrewrite.
     # REST API (/rest/api/...) работает через urlrewrite → 404.php → prolog → init → REST.
+    location = / {
+        try_files $uri /index.php$is_args$args;
+    }
     location / {
         try_files $uri $uri/ @bitrix;
     }
