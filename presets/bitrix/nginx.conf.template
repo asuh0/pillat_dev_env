@@ -151,10 +151,13 @@ server {
         location ~* @.*\.html$ { internal; }
     }
 
+    # Общий вход Bitrix: urlrewrite.php с явной передачей REQUEST_URI.
+    # REST API (/rest/api/...) работает через urlrewrite → 404.php → prolog → init → модуль REST.
     location @php {
         try_files $uri /bitrix/urlrewrite.php$is_args$args;
         include fastcgi_params;
         fastcgi_pass {{PHP_UPSTREAM}}:9000;
+        fastcgi_param REQUEST_URI $request_uri;
         fastcgi_param HTTP_REFERER $http_referer if_not_empty;
         fastcgi_param HTTP_X_REQUESTED_WITH $http_x_requested_with if_not_empty;
         fastcgi_index index.php;

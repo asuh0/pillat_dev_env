@@ -249,7 +249,6 @@ bash ./hostctl.sh logs-review
 
 Поддержка kernel/ext_kernel/link: общее ядро, симлинки shared paths, guard при удалении core.
 
-**Референс:** [Bitrix in Docker — многосайтовая конфигурация](https://gitlab.com/bitrix-docker/server/-/tree/master#многосайтовая-конфигурация): в docker-compose добавляются volume-связи между контейнером link-хоста и ядра, симлинки создаются внутри контейнера при старте (entrypoint).
 
 ### Структура (подход Bitrix Docker)
 

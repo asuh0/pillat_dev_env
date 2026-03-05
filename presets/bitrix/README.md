@@ -27,7 +27,7 @@
 - `www/bitrixsetup.php` — установщик продукта (загружается автоматически при создании хоста).
 - `www/restore.php` — скрипт восстановления из резервной копии (загружается автоматически при создании хоста).
 - `.settings.php.template` — шаблон настроек Битрикс (БД, кеш).
-- `nginx.conf.template` — конфиг nginx для Bitrix (адаптирован из [Bitrix in Docker](https://gitlab.com/bitrix-docker/server/-/blob/master/bitrix-distr/config/nginx/default.conf)): urlrewrite.php, internal locations, кэш, статика.
+- `nginx.conf.template` — конфиг nginx для Bitrix: urlrewrite.php, internal locations, кэш, статика.
 
 ## Документация Битрикс
 
