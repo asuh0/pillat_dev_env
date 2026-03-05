@@ -74,7 +74,7 @@ server {
         access_log off;
         expires 97d;
         error_page 404 /404.html;
-        location ~ /\. { internal; }
+        location ~* /\.(htaccess|git|env|svn)(/|$) { deny all; }
     }
 
     # Static: bitrix/tmp
@@ -82,7 +82,7 @@ server {
         access_log off;
         expires 97d;
         error_page 404 /404.html;
-        location ~ /\. { internal; }
+        location ~* /\.(htaccess|git|env|svn)(/|$) { deny all; }
     }
 
     # bitrix/cache: merged css/js доступны, остальное internal
@@ -93,12 +93,12 @@ server {
             error_page 404 /404.html;
         }
         location /bitrix/cache { internal; }
-        location ~ /\. { internal; }
+        location ~* /\.(htaccess|git|env|svn)(/|$) { deny all; }
     }
 
     # upload/
     location ^~ /upload/ {
-        location ~ /\. { internal; }
+        location ~* /\.(htaccess|git|env|svn)(/|$) { deny all; }
         location ~* ^/upload/1c_[^/]+/ { internal; }
         location ~* [^/]\.(jpe?g|png|tiff|gif|webp|xml|yml|ogg|ogv|svgz?|eot|otf|woff2?|mp4|ttf|rss|atom|ico|zip|t?gz|rar|bz2|doc|xls|exe|ppt|tar|midi?|wav|rtf|pdf|txt|js|css|bmp|pnm|pbm|ppm)$ {
             access_log off;
@@ -130,7 +130,7 @@ server {
             }
         }
 
-        location ~ /\. { internal; }
+        location ~* /\.(htaccess|git|env|svn)(/|$) { deny all; }
 
         location ~* ^/bitrix/cache/(css/.+\.css|js/.+\.js)$ {
             access_log off;

@@ -541,7 +541,7 @@ server {
         include fastcgi_params;
     }
 
-    location ~ /\. {
+    location ~* /\.(htaccess|git|env|svn)(/|$) {
         deny all;
     }
 }
