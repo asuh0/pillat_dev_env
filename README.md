@@ -249,14 +249,13 @@ bash ./hostctl.sh logs-review
 
 Поддержка kernel/ext_kernel/link: общее ядро, симлинки shared paths, guard при удалении core.
 
-### Симлинки между ядром и link-хостами
+**Референс:** [Bitrix in Docker — многосайтовая конфигурация](https://gitlab.com/bitrix-docker/server/-/tree/master#многосайтовая-конфигурация): в docker-compose добавляются volume-связи между контейнером link-хоста и ядра, симлинки создаются внутри контейнера при старте (entrypoint).
 
-Ядро монтируется в `/var/core-<id>/www`, симлинки в `www` link-хоста указывают на этот путь. Так путь одинаков и в контейнере, и на хосте — IDE видит `bitrix`, `upload`, `images` внутри проекта.
+### Структура (подход Bitrix Docker)
 
-**Структура:**
-- Ядро (core): `projects/<core>/www/{bitrix,upload,images}` — реальные каталоги.
-- Link-хост: `projects/<link>/www/{bitrix,upload,images}` — симлинки → `/var/core-<id>/www/...`.
-- В контейнере: volume mount `../core/www/bitrix` → `/var/core-<id>/www/bitrix`.
+- **Ядро (core):** `projects/<core_host>/www/{bitrix,upload,images}` — реальные каталоги.
+- **Link-хост:** `projects/<link_host>/www/{bitrix,upload,images}` — симлинки → `/var/core-<id>/{bitrix,upload,images}`.
+- **В контейнере:** volume mount `../core/www/bitrix` → `/var/core-<id>/bitrix`; entrypoint создаёт симлинки в `/opt/www` при старте.
 
 **Для IDE (чтобы видеть файлы ядра в link-проекте):**
 
@@ -264,23 +263,20 @@ bash ./hostctl.sh logs-review
 
 ```bash
 cd infra/scripts
-sudo ./link-setup-ide.sh core-shintyre
+sudo ./link-setup-ide.sh core-<id>
 ```
 
-Замените `core-shintyre` на ваш `core_id`. Скрипт создаёт `/var/core-shintyre` → `projects/shintyre` (чтобы `/var/core-shintyre/www/bitrix` резолвился в `projects/shintyre/www/bitrix`).
+Скрипт создаёт `/var/core-<id>` → `projects/<core_host>/www`. Тогда `/var/core-<id>/bitrix` = `projects/<core_host>/www/bitrix`.
 
-**Для уже существующих link-хостов** (если симлинки отсутствуют или сломаны):
+**Важно:** запускайте с `sudo`. Проверка: `readlink /var/core-<id>` должен показать путь к `projects/<core_host>/www`.
 
-1. Сначала создайте `/var/core-<id>` для IDE: `sudo ./link-setup-ide.sh core-<id>`
-2. Затем создайте симлинки в `www`:
+**Cursor IDE:** может не индексировать симлинки в `/var`. Обходной путь — добавить папку ядра в workspace: File → Add Folder to Workspace → `projects/<core_host>`.
 
-```bash
-cd projects/<link-host>/www
-rm -f bitrix upload images
-ln -s /var/core-<id>/www/bitrix bitrix
-ln -s /var/core-<id>/www/upload upload
-ln -s /var/core-<id>/www/images images
-```
+**Если bitrix пустая в link-проекте:**
+
+1. Запустите контейнер — entrypoint создаст симлинки при старте.
+2. Для IDE создайте `/var/core-<id>`: `sudo ./infra/scripts/link-setup-ide.sh core-<id>`.
+3. Если симлинки отсутствуют на хосте: `./infra/scripts/hostctl.sh repair-link <link_host>`.
 
 **Для новых link-хостов** симлинки создаются автоматически при `hostctl create`.
 

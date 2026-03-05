@@ -22,6 +22,11 @@ shared-volumes/
 infra/config/*
 !infra/config/.gitkeep
 
+# Случайные симлинки в корне (link-setup в неправильной директории)
+/bitrix
+/images
+/upload
+
 # Системные и временные файлы
 *.log
 .DS_Store

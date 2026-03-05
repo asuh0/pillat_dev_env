@@ -77,6 +77,7 @@ Usage:
   hostctl.sh logs [--tail <lines>]
   hostctl.sh logs-review [--dry-run]
   hostctl.sh link-db-host <link_host>
+  hostctl.sh repair-link <link_host>
 
 Notes:
   create <host> in interactive terminal automatically starts dialog mode
@@ -1121,8 +1122,7 @@ else:
 PY
 }
 
-# Добавляет volume mounts core в link-хост (подход Bitrix Docker: core в /var/core-<id>/www,
-# симлинки в контейнере и на хосте для IDE). См. https://gitlab.com/bitrix-docker/server/-/tree/master#многосайтовая-конфигурация
+# Добавляет volume mounts core в link-хост (подход Bitrix Docker: core в /var/core-<id>/, симлинки в контейнере).
 inject_link_core_volumes() {
     local compose_file="$1"
     local core_owner_host="$2"
@@ -1130,7 +1130,6 @@ inject_link_core_volumes() {
     [ -f "$compose_file" ] || return 0
     require_python3 required "inject_link_core_volumes" || return 1
 
-    # core_path_id для /var/core-<id> (короткое имя: core-shintyre -> shintyre)
     local core_path_id="${core_id:-$core_owner_host}"
     core_path_id="${core_path_id#core-}"
     core_path_id="$(echo "$core_path_id" | tr '.' '-')"
@@ -1144,14 +1143,46 @@ compose_path = pathlib.Path(sys.argv[1])
 core_owner_host = sys.argv[2]
 core_path_id = sys.argv[3]
 core_prefix = f"../{core_owner_host}/www"
-core_mount_prefix = f"/var/core-{core_path_id}/www"
+# Bitrix Docker: /var/main.ru/bitrix (без /www в пути контейнера)
+core_mount_prefix = f"/var/core-{core_path_id}"
 shared_paths = ["bitrix", "upload", "images"]
 
 text = compose_path.read_text(encoding="utf-8")
-# Идемпотентность: уже есть core mounts в новом формате — не добавлять
-if core_mount_prefix in text:
+# Удалить проблемный volume ../..:/opt:ro (read-only /opt ломает монтирование ./www:/opt/www)
+lines = []
+for line in text.splitlines():
+    if re.search(r'\.\./\.\.\s*:\s*/opt', line):
+        continue
+    lines.append(line)
+text = "\n".join(lines)
+# Пропустить если уже есть новый формат (/var/core-X/bitrix без /www)
+if f'"{core_mount_prefix}/bitrix"' in text:
     sys.exit(0)
-# Миграция: заменить старый формат (mount в /opt/www/bitrix) на новый (/var/core-xxx)
+# Миграция: заменить старый формат /var/core-X/www/ на /var/core-X/
+old_prefix = f"/var/core-{core_path_id}/www"
+if old_prefix in text:
+    text = text.replace(f'{old_prefix}/bitrix"', f'{core_mount_prefix}/bitrix"')
+    text = text.replace(f'{old_prefix}/bitrix:ro"', f'{core_mount_prefix}/bitrix:ro"')
+    text = text.replace(f'{old_prefix}/upload"', f'{core_mount_prefix}/upload"')
+    text = text.replace(f'{old_prefix}/upload:ro"', f'{core_mount_prefix}/upload:ro"')
+    text = text.replace(f'{old_prefix}/images"', f'{core_mount_prefix}/images"')
+    text = text.replace(f'{old_prefix}/images:ro"', f'{core_mount_prefix}/images:ro"')
+    # Добавить entrypoint при миграции, если ещё нет
+    if 'entrypoint:' not in text:
+        entrypoint_script = (
+            f'rm -rf /opt/www/bitrix /opt/www/upload /opt/www/images 2>/dev/null; '
+            f'ln -sf {core_mount_prefix}/bitrix /opt/www/bitrix && '
+            f'ln -sf {core_mount_prefix}/upload /opt/www/upload && '
+            f'ln -sf {core_mount_prefix}/images /opt/www/images; '
+            'exec docker-php-entrypoint php-fpm'
+        )
+        env_match = re.search(r'\n(    environment:\s*\n(?:      - [^\n]*\n)*)', text)
+        if env_match:
+            pos = env_match.start(1)
+            ep_escaped = entrypoint_script.replace('\\', '\\\\').replace('"', '\\"')
+            text = text[:pos] + f'    entrypoint: ["/bin/sh", "-ec", "{ep_escaped}"]\n' + text[pos:]
+    compose_path.write_text(text, encoding="utf-8")
+    sys.exit(0)
 if "/opt/www/bitrix" in text:
     for p in shared_paths:
         text = text.replace(f':/opt/www/{p}"', f':{core_mount_prefix}/{p}"')
@@ -1166,7 +1197,6 @@ i = 0
 while i < len(lines):
     line = lines[i]
     result.append(line)
-    # После "- ./www:/opt/www" добавляем core mounts в /var/core-<id>/www (не в /opt/www)
     if re.search(r'-\s+["\']?[^"\']*www["\']?\s*:\s*/opt/www', line) and 'bitrix' not in line:
         indent = len(line) - len(line.lstrip())
         pad = " " * indent
@@ -1176,14 +1206,31 @@ while i < len(lines):
             result.append(f'{pad}- "{core_prefix}/{p}:{core_mount_prefix}/{p}{suffix}"')
     i += 1
 
-compose_path.write_text("\n".join(result) + "\n", encoding="utf-8")
+text = "\n".join(result) + "\n"
+
+# Bitrix Docker: entrypoint создаёт симлинки внутри контейнера при старте
+entrypoint_script = (
+    f'rm -rf /opt/www/bitrix /opt/www/upload /opt/www/images 2>/dev/null; '
+    f'ln -sf {core_mount_prefix}/bitrix /opt/www/bitrix && '
+    f'ln -sf {core_mount_prefix}/upload /opt/www/upload && '
+    f'ln -sf {core_mount_prefix}/images /opt/www/images; '
+    'exec docker-php-entrypoint php-fpm'
+)
+if 'entrypoint:' not in text:
+    # Вставить entrypoint перед "    environment:" в секции php
+    env_match = re.search(r'\n(    environment:\s*\n(?:      - [^\n]*\n)*)', text)
+    if env_match:
+        pos = env_match.start(1)
+        ep_escaped = entrypoint_script.replace('\\', '\\\\').replace('"', '\\"')
+        entrypoint_block = f'    entrypoint: ["/bin/sh", "-ec", "{ep_escaped}"]\n'
+        text = text[:pos] + entrypoint_block + text[pos:]
+
+compose_path.write_text(text, encoding="utf-8")
 PY
 }
 
-# Bitrix multisite path map (T019), подход Bitrix Docker:
-#   Симлинки в www указывают на /var/core-<id>/www/<path> — путь работает и в контейнере (mount),
-#   и на хосте (после создания /var/core-<id> -> core/www, на macOS: sudo).
-#   Для IDE: sudo ln -sf "$(realpath projects/<core>/www)" /var/core-<id>
+# Bitrix multisite (подход Bitrix Docker): volumes в compose, симлинки в контейнере (entrypoint).
+# На хосте — симлинки для IDE (link-setup-ide создаёт /var/core-<id> -> projects/<core>/www).
 prepare_link_shared_paths() {
     local core_host="$1"
     local link_host="$2"
@@ -1196,8 +1243,8 @@ prepare_link_shared_paths() {
     local created_symlinks=()
     local path=""
     local target_link=""
-    # Путь в контейнере и на хосте (после создания /var/core-<id>)
-    local symlink_target_prefix="/var/core-${core_path_id}/www"
+    # Bitrix Docker: /var/main.ru/bitrix (без /www)
+    local symlink_target_prefix="/var/core-${core_path_id}"
 
     mkdir -p "$link_src" "$link_src/local"
 
@@ -1219,6 +1266,30 @@ prepare_link_shared_paths() {
         fi
         created_symlinks+=("$target_link")
     done
+}
+
+# Восстановление симлинков bitrix/upload/images в link-проекте (если пустые или битые).
+repair_link_symlinks() {
+    local link_host="$1"
+    local core_id=""
+    local core_owner_host=""
+    local core_dir=""
+    local project_dir="$PROJECTS_DIR/$link_host"
+
+    [ -d "$project_dir" ] || { echo "Ошибка: проект '$link_host' не найден."; exit 1; }
+    core_id="$(bindings_registry_get_core_id_for_host "$link_host" 2>/dev/null)"
+    [ -n "$core_id" ] || { echo "Ошибка: '$link_host' не зарегистрирован как link-проект."; exit 1; }
+    core_owner_host="$(core_registry_get_field "$core_id" 2)"
+    [ -n "$core_owner_host" ] || { echo "Ошибка: core '$core_id' не найден в реестре."; exit 1; }
+    core_dir="$(resolve_core_project_dir "$core_owner_host")"
+    [ -d "$PROJECTS_DIR/$core_dir" ] || { echo "Ошибка: каталог ядра '$core_dir' не найден."; exit 1; }
+
+    if prepare_link_shared_paths "$core_owner_host" "$link_host" "$core_id"; then
+        echo "Симлинки bitrix/upload/images восстановлены для '$link_host'."
+    else
+        echo "Ошибка при восстановлении симлинков."
+        exit 1
+    fi
 }
 
 read_core_db_values() {
@@ -3619,9 +3690,14 @@ FPMEOF
             fi
         fi
     else
-        # Fallback: миграция при наличии старого формата в compose (host не в bindings)
+        # Fallback: host не в bindings — проверить compose на link-формат (core volumes)
         local core_from_compose=""
-        if grep -q '/opt/www/bitrix' "$compose_file" 2>/dev/null; then
+        if grep -qE '\.\./[^/]+/www/bitrix.*:/var/core-[^/]+/' "$compose_file" 2>/dev/null; then
+            core_from_compose="$(grep -oE '\.\./([^/]+)/www/bitrix' "$compose_file" 2>/dev/null | head -1 | cut -d/ -f2)"
+            if [ -n "$core_from_compose" ] && [ -d "$PROJECTS_DIR/$core_from_compose" ]; then
+                inject_link_core_volumes "$compose_file" "$core_from_compose" "core-$core_from_compose" 2>/dev/null || true
+            fi
+        elif grep -q '/opt/www/bitrix' "$compose_file" 2>/dev/null; then
             core_from_compose="$(grep -oE '\.\./[^/]+/www/bitrix' "$compose_file" 2>/dev/null | head -1 | cut -d/ -f2)"
             if [ -n "$core_from_compose" ] && [ -d "$PROJECTS_DIR/$core_from_compose" ]; then
                 inject_link_core_volumes "$compose_file" "$core_from_compose" "core-$core_from_compose" 2>/dev/null || true
@@ -4731,6 +4807,10 @@ main() {
         link-db-host)
             [ "$#" -ge 1 ] || { echo "Usage: hostctl.sh link-db-host <link_host>"; exit 1; }
             show_link_db_host "$1"
+            ;;
+        repair-link)
+            [ "$#" -ge 1 ] || { echo "Usage: hostctl.sh repair-link <link_host>"; usage; exit 1; }
+            repair_link_symlinks "$1"
             ;;
         help|-h|--help)
             usage
