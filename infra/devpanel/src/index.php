@@ -39,6 +39,10 @@ if (!is_dir($logsDir)) {
 if ($logsDir !== '' && !is_dir($logsDir)) {
     @mkdir($logsDir, 0775, true);
 }
+$jobsDirBase = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+if ($jobsDirBase !== '' && !is_dir($jobsDirBase)) {
+    @mkdir($jobsDirBase, 0777, true);
+}
 
 // Legacy: для миграции из infra/state и infra/logs
 $legacyStateDir = realpath(__DIR__ . '/../../state') ?: '';
@@ -950,7 +954,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     // Для AJAX: запускаем создание в фоне, чтобы не рвать долгий HTTP-запрос
                     if ($isAjax) {
-                        $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
+                        $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
                         if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                             $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                             if (!headers_sent()) {
@@ -1001,7 +1005,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             'status' => 'running',
                             'result_logged' => false,
                         ];
-                        @file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                        if (@file_put_contents($jobMetaFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) === false || !is_file($jobMetaFile)) {
+                            $actionResult = ['type' => 'error', 'message' => 'Не удалось сохранить метаданные задачи. Проверьте права на каталог devpanel-jobs.'];
+                            if (!headers_sent()) {
+                                header('Content-Type: application/json; charset=utf-8');
+                            }
+                            echo json_encode($actionResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                            exit;
+                        }
 
                         $pidOutput = [];
                         $launchCode = 1;
@@ -1219,7 +1230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 exit;
             }
 
-            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
+            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1439,7 +1450,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             // По аналогии с set-php: при AJAX запускаем start/restart в фоне и отдаём job_id для опроса лога
             if (($action === 'start' || $action === 'restart') && $isAjax) {
-                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
+                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
                 if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                     $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                     if (!headers_sent()) {
@@ -1557,7 +1568,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 exit;
             }
-            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
+            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1676,7 +1687,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' set-php ' . escapeshellarg($projectName) . ' ' . escapeshellarg($phpVersion) . ' 2>&1';
 
             if ($isAjax) {
-                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
+                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
                 if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                     $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                     if (!headers_sent()) {
@@ -1790,7 +1801,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 exit;
             }
-            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/devpanel-jobs' : '';
+            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');

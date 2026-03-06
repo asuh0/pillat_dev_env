@@ -490,8 +490,11 @@ migrate_legacy_state_layout() {
     migrate_legacy_state_file "$legacy_logs/hostctl.log" "$HOSTCTL_LOG_FILE"
     migrate_legacy_state_file "$legacy_state/devpanel-actions.log" "$LOGS_DIR/devpanel-actions.log"
     migrate_legacy_state_file "$legacy_logs/devpanel-actions.log" "$LOGS_DIR/devpanel-actions.log"
-    migrate_legacy_state_file "$legacy_state/devpanel-jobs" "$LOGS_DIR/devpanel-jobs"
-    migrate_legacy_state_file "$legacy_logs/devpanel-jobs" "$LOGS_DIR/devpanel-jobs"
+    # devpanel-jobs: пропуск когда legacy_logs=LOGS_DIR (в контейнере оба /logs) — иначе миграция удаляет активные задачи
+    if [ "$legacy_logs" != "$LOGS_DIR" ]; then
+        migrate_legacy_state_file "$legacy_state/devpanel-jobs" "$LOGS_DIR/devpanel-jobs"
+        migrate_legacy_state_file "$legacy_logs/devpanel-jobs" "$LOGS_DIR/devpanel-jobs"
+    fi
     for f in "$legacy_state"/log-review-report-*.md "$legacy_logs"/log-review-report-*.md; do
         [ -f "$f" ] || continue
         migrate_legacy_state_file "$f" "$LOGS_DIR/$(basename "$f")"
@@ -4509,7 +4512,7 @@ collect_log_inventory() {
 
     append_log_inventory_entry "$inventory_file" "hostctl_operation_log" "$HOSTCTL_LOG_FILE" "file" "0" "Журнал операций hostctl."
     append_log_inventory_entry "$inventory_file" "devpanel_action_log" "$LOGS_DIR/devpanel-actions.log" "file" "0" "Журнал действий из DevPanel."
-    append_log_inventory_entry "$inventory_file" "devpanel_job_artifacts" "$LOGS_DIR/devpanel-jobs" "dir" "0" "Фоновые job-артефакты DevPanel (.log/.json/.sh/.exit)."
+    append_log_inventory_entry "$inventory_file" "devpanel_job_artifacts" "$LOGS_DIR/.devpanel-jobs" "dir" "0" "Фоновые job-артефакты DevPanel (.log/.json/.sh/.exit)."
 
     append_log_inventory_entry "$inventory_file" "legacy_root_logs" "$PROJECTS_DIR/.hostctl.log" "file" "0" "Legacy hostctl log в projects/ (подлежит миграции)."
     append_log_inventory_entry "$inventory_file" "legacy_root_logs" "$PROJECTS_DIR/.devpanel-actions.log" "file" "0" "Legacy DevPanel actions log в projects/."
