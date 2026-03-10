@@ -1626,6 +1626,7 @@ new_block = (
     "RUN set -eux; \\\n"
     "    if ! pecl install xdebug; then \\\n"
     "        case \"${PHP_VERSION}\" in \\\n"
+    "            5.6) pecl install xdebug-2.5.5 ;; \\\n"
     "            7.4) pecl install xdebug-3.1.6 ;; \\\n"
     "            8.0|8.1) pecl install xdebug-3.3.2 ;; \\\n"
     "            8.2|8.3|8.4) pecl install xdebug-3.4.2 ;; \\\n"
@@ -3904,13 +3905,14 @@ set_php_host() {
 
     if [ -z "$version_input" ]; then
         echo "Usage: hostctl.sh set-php <host> <version>"
-        echo "  version: 7.4, 8.1, 8.2, 8.3 или 8.4"
+        echo "  version: 5.6, 7.4, 8.1, 8.2, 8.3 или 8.4"
         usage
         exit 1
     fi
 
     # Валидация версии до разрешения хоста (чтобы сразу сообщать о неподдерживаемой версии).
     case "$version_input" in
+        5.6) php_suffix="56" ;;
         7.4) php_suffix="74" ;;
         8.1) php_suffix="81" ;;
         8.2) php_suffix="82" ;;
@@ -3918,7 +3920,7 @@ set_php_host() {
         8.4) php_suffix="84" ;;
         *)
             echo "Error: неподдерживаемая версия PHP: $version_input"
-            echo "Доступные версии: 7.4 8.1 8.2 8.3 8.4"
+            echo "Доступные версии: 5.6 7.4 8.1 8.2 8.3 8.4"
             exit 1
             ;;
     esac
@@ -3927,7 +3929,7 @@ set_php_host() {
     if [ ! -f "$template_file" ]; then
         echo "Error: шаблон для PHP $version_input не найден: $template_file"
         printf "Доступные: "
-        for ver in 7.4 8.1 8.2 8.3 8.4; do
+        for ver in 5.6 7.4 8.1 8.2 8.3 8.4; do
             s="${ver//./}"
             [ -f "$INFRA_DIR/templates/php/Dockerfile.php$s" ] && printf "%s " "$ver"
         done
@@ -3959,12 +3961,22 @@ set_php_host() {
 
     echo "🔄 Переключение PHP хоста '$project_dir_name' на $version_input..."
 
-    if ! sed -i.bak -E "s/Dockerfile\.php(74|81|82|83|84)/Dockerfile.php$php_suffix/" "$compose_file"; then
+    if ! sed -i.bak -E "s/Dockerfile\.php(56|74|81|82|83|84)/Dockerfile.php$php_suffix/" "$compose_file"; then
         echo "Error: не удалось обновить docker-compose.yml"
         exit 1
     fi
     # Обновить build args PHP_VERSION в compose (иначе переопределит ARG из Dockerfile и будет собираться не та версия)
-    sed -i.bak -E "s/(PHP_VERSION:[[:space:]]*)(7\.4|8\.[1-4])/\1$version_input/" "$compose_file" 2>/dev/null || true
+    sed -i.bak -E "s/(PHP_VERSION:[[:space:]]*)(5\.6|7\.4|8\.[1-4])/\1$version_input/" "$compose_file" 2>/dev/null || true
+    # Для PHP 5.6 — MySQL 5.7, для остальных — MySQL 8.0
+    if grep -q 'image: mysql' "$compose_file" 2>/dev/null; then
+        if [ "$version_input" = "5.6" ]; then
+            sed -i.bak -E 's/image: mysql:8\.0/image: mysql:5.7/' "$compose_file" 2>/dev/null || true
+            echo "   ⚠️  Внимание: для PHP 5.6 используется MySQL 5.7. Если ранее был MySQL 8.0, при следующем start/restart контейнер БД будет пересоздан. При несовместимости данных сделайте дамп и восстановление."
+        else
+            sed -i.bak -E 's/image: mysql:5\.7/image: mysql:8.0/' "$compose_file" 2>/dev/null || true
+            echo "   ⚠️  Внимание: для PHP $version_input используется MySQL 8.0. Если ранее был MySQL 5.7, при следующем start/restart контейнер БД будет пересоздан. При несовместимости данных сделайте дамп и восстановление."
+        fi
+    fi
     rm -f "$compose_file.bak"
 
     cp "$template_file" "$project_dir/Dockerfile.php$php_suffix"

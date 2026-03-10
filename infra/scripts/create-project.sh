@@ -358,12 +358,14 @@ services:
 
 EOF
 
-# Добавление БД в зависимости от типа
+# Добавление БД в зависимости от типа (для PHP 5.6 — MySQL 5.7, иначе 8.0)
 if [ "$DB_TYPE" = "mysql" ]; then
+    MYSQL_IMAGE="mysql:8.0"
+    [ "$PHP_VERSION" = "5.6" ] && MYSQL_IMAGE="mysql:5.7"
     cat >> "$PROJECT_DIR/docker-compose.yml" <<EOF
 
   ${DB_SERVICE_NAME}:
-    image: mysql:8.0
+    image: ${MYSQL_IMAGE}
     container_name: ${PROJECT_NAME//./-}-mysql
     volumes:
       - db_data:/var/lib/mysql
@@ -458,6 +460,7 @@ RUN apk add --no-cache \\
 RUN set -eux; \\
     if ! pecl install xdebug; then \\
         case "\${PHP_VERSION}" in \\
+            5.6) pecl install xdebug-2.5.5 ;; \\
             7.4) pecl install xdebug-3.1.6 ;; \\
             8.0|8.1) pecl install xdebug-3.3.2 ;; \\
             *) pecl install xdebug ;; \\

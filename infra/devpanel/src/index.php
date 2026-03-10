@@ -759,6 +759,7 @@ function getInfraStatus() {
         'traefik' => ['name' => 'Traefik', 'status' => 'Down', 'container' => null],
         'adminer' => ['name' => 'Adminer', 'status' => 'Down', 'container' => null],
         'redis' => ['name' => 'Redis', 'status' => 'Down', 'container' => null],
+        'memcached' => ['name' => 'Memcached', 'status' => 'Down', 'container' => null],
         'loki' => ['name' => 'Loki', 'status' => 'Down', 'container' => null],
         'promtail' => ['name' => 'Promtail', 'status' => 'Down', 'container' => null],
         'grafana' => ['name' => 'Grafana', 'status' => 'Down', 'container' => null],
@@ -783,6 +784,9 @@ function getInfraStatus() {
         } elseif ($name === 'redis') {
             $services['redis']['status'] = $isUp ? 'Up' : 'Down';
             $services['redis']['container'] = $containerName;
+        } elseif ($name === 'memcached') {
+            $services['memcached']['status'] = $isUp ? 'Up' : 'Down';
+            $services['memcached']['container'] = $containerName;
         } elseif ($name === 'loki') {
             $services['loki']['status'] = $isUp ? 'Up' : 'Down';
             $services['loki']['container'] = $containerName;
@@ -1671,7 +1675,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         case 'set-php':
             $projectName = trim($_POST['project_name'] ?? '');
             $phpVersion = trim($_POST['php_version'] ?? '');
-            $allowedVersions = ['7.4', '8.1', '8.2', '8.3', '8.4'];
+            $allowedVersions = ['5.6', '7.4', '8.1', '8.2', '8.3', '8.4'];
             if (empty($projectName) || !preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
                 $actionResult = ['type' => 'error', 'message' => 'Некорректное имя проекта.'];
                 break;
@@ -2162,6 +2166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 'traefik' => ['icon' => 'bi-speedometer2', 'color' => 'primary', 'desc' => 'Мониторинг роутинга', 'path' => '/dashboard/'],
                 'adminer' => ['icon' => 'bi-database', 'color' => 'success', 'desc' => 'Управление БД', 'path' => ''],
                 'redis' => ['icon' => 'bi-memory', 'color' => 'danger', 'desc' => 'Кэш и сессии', 'path' => ''],
+                'memcached' => ['icon' => 'bi-hdd-network', 'color' => 'warning', 'desc' => 'Кэш (memcached)', 'path' => ''],
                 'loki' => ['icon' => 'bi-journal-text', 'color' => 'info', 'desc' => 'Хранилище логов', 'path' => ''],
                 'promtail' => ['icon' => 'bi-collection', 'color' => 'info', 'desc' => 'Сбор логов', 'path' => ''],
                 'grafana' => ['icon' => 'bi-graph-up', 'color' => 'info', 'desc' => 'Логи и метрики', 'path' => ''],
@@ -2309,6 +2314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                         <option value="8.3">8.3</option>
                                         <option value="8.4">8.4</option>
                                         <option value="7.4">7.4</option>
+                                        <option value="5.6">5.6</option>
                                     </select>
                                 </div>
                                 <div class="col-md-2 mb-3">
@@ -2456,7 +2462,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                                 <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
                                                 <input type="hidden" name="ajax" value="1">
                                                 <select name="php_version" class="form-select form-select-sm" style="width: auto;">
-                                                    <?php foreach (['7.4', '8.1', '8.2', '8.3', '8.4'] as $v): ?>
+                                                    <?php foreach (['5.6', '7.4', '8.1', '8.2', '8.3', '8.4'] as $v): ?>
                                                     <option value="<?= $v ?>" <?= ($metadata['php_version'] ?? '') === $v ? 'selected' : '' ?>><?= $v ?></option>
                                                     <?php endforeach; ?>
                                                 </select>

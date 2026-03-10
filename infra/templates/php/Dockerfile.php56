@@ -1,0 +1,65 @@
+# PHP 5.6: только образ на Debian (php:5.6-fpm-alpine нет в официальных образах)
+ARG PHP_VERSION=5.6
+FROM php:${PHP_VERSION}-fpm
+ARG PHP_VERSION=5.6
+
+# Репозитории Stretch в archive: только stretch main и security/updates (stretch-updates в archive нет → 404)
+# Без AllowUnauthenticated apt отказывается работать из-за устаревших ключей в образе
+RUN echo 'deb http://archive.debian.org/debian stretch main' > /etc/apt/sources.list \
+    && echo 'deb http://archive.debian.org/debian-security stretch/updates main' >> /etc/apt/sources.list
+
+# Зависимости для сборки расширений (Debian): git и default-libmysqlclient-dev для линковки ext/mysql
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowDowngradeToInsecureRepositories=true update \
+    && apt-get install -y --no-install-recommends --allow-unauthenticated \
+    autoconf \
+    file \
+    g++ \
+    gcc \
+    libc-dev \
+    make \
+    pkg-config \
+    re2c \
+    git \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    libzip-dev \
+    libonig-dev \
+    mysql-client \
+    default-libmysqlclient-dev \
+    && docker-php-ext-configure gd --with-freetype-dir=/usr/include/ --with-jpeg-dir=/usr/include/ \
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        mysqli \
+        pdo_mysql \
+        zip \
+        mbstring \
+        opcache \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Сборка расширения mysql из исходников PHP 5.6 (удалено в PHP 7+, нужно для старых проектов)
+RUN git clone --depth 1 --branch PHP-5.6 https://github.com/php/php-src.git /tmp/php-src \
+    && cd /tmp/php-src/ext/mysql \
+    && phpize \
+    && ./configure \
+    && make -j$(nproc) \
+    && make install \
+    && echo 'extension=mysql.so' > /usr/local/etc/php/conf.d/docker-php-ext-mysql.ini \
+    && rm -rf /tmp/php-src
+
+# Xdebug 2.5.x для PHP 5.6 (3.x требует PHP 7+)
+RUN pecl install xdebug-2.5.5 \
+    && docker-php-ext-enable xdebug || true
+
+# Composer 1.x (2.x требует PHP 7.2+)
+COPY --from=composer:1 /usr/bin/composer /usr/bin/composer
+
+# Конфигурация PHP
+COPY php.ini /usr/local/etc/php/conf.d/custom.ini
+COPY xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
+
+# Рабочая директория
+WORKDIR /opt/www
+
+# Права доступа
+RUN chown -R www-data:www-data /opt/www
