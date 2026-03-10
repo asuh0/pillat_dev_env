@@ -350,22 +350,29 @@ services:
       - infra_proxy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.${PROJECT_NAME//./-}.rule=Host(\`${PROJECT_NAME}\`)"
-      - "traefik.http.routers.${PROJECT_NAME//./-}.entrypoints=websecure"
-      - "traefik.http.routers.${PROJECT_NAME//./-}.tls=true"
-      - "traefik.http.services.${PROJECT_NAME//./-}.loadbalancer.server.port=80"
-      - "traefik.http.routers.${PROJECT_NAME//./-}.service=${PROJECT_NAME//./-}"
+      - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.rule=Host(\`${PROJECT_NAME}\`)"
+      - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.tls=true"
+      - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.priority=100"
+      - "traefik.http.services.${PROJECT_NAME//./-}-nginx.loadbalancer.server.port=80"
+      - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.service=${PROJECT_NAME//./-}-nginx"
 
 EOF
 
 # Добавление БД в зависимости от типа (для PHP 5.6 — MySQL 5.7, иначе 8.0)
 if [ "$DB_TYPE" = "mysql" ]; then
     MYSQL_IMAGE="mysql:8.0"
-    [ "$PHP_VERSION" = "5.6" ] && MYSQL_IMAGE="mysql:5.7"
+    MYSQL_PLATFORM=""
+    if [ "$PHP_VERSION" = "5.6" ]; then
+        MYSQL_IMAGE="mysql:5.7"
+        # MySQL 5.7 нет образа для linux/arm64 (Apple M1/M2) — запуск через amd64 эмуляцию
+        MYSQL_PLATFORM="
+    platform: linux/amd64"
+    fi
     cat >> "$PROJECT_DIR/docker-compose.yml" <<EOF
 
   ${DB_SERVICE_NAME}:
-    image: ${MYSQL_IMAGE}
+    image: ${MYSQL_IMAGE}${MYSQL_PLATFORM}
     container_name: ${PROJECT_NAME//./-}-mysql
     volumes:
       - db_data:/var/lib/mysql

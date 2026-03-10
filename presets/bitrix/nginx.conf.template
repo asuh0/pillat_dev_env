@@ -61,6 +61,14 @@ server {
         access_log off;
     }
 
+    # Отсутствующие .min.js/.min.css — отдать исходный .js/.css (как в Apache: RewriteCond !-f + RewriteRule .min -> без .min)
+    location ~* ^(.+)\.min\.(js|css)$ {
+        try_files $uri $1.$2 =404;
+        expires 97d;
+        access_log off;
+        add_header X-Content-Type-Options nosniff;
+    }
+
     # Internal locations (Bitrix)
     location ^~ /bitrix/modules { internal; }
     location ^~ /bitrix/local_cache { internal; }

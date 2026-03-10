@@ -78,6 +78,7 @@ Usage:
   hostctl.sh logs-review [--dry-run]
   hostctl.sh link-db-host <link_host>
   hostctl.sh repair-link <link_host>
+  hostctl.sh fix-traefik-routes
 
 Notes:
   create <host> in interactive terminal automatically starts dialog mode
@@ -1322,6 +1323,40 @@ repair_link_symlinks() {
     else
         echo "Ошибка при восстановлении симлинков."
         exit 1
+    fi
+}
+
+# Миграция: уникальные имена роутеров/сервисов Traefik (NAME -> NAME-nginx) и priority=100 для проектов.
+# Устраняет «перескакивание» сайтов при перезагрузке из-за конфликта имён в провайдере Docker.
+fix_traefik_routes() {
+    local project_dir_name="" compose_file="" name="" updated=0
+    [ -d "$PROJECTS_DIR" ] || { echo "Каталог проектов не найден."; return 0; }
+    for project_dir_name in "$PROJECTS_DIR"/*/; do
+        [ -d "$project_dir_name" ] || continue
+        project_dir_name="$(basename "$project_dir_name")"
+        compose_file="$PROJECTS_DIR/$project_dir_name/docker-compose.yml"
+        [ -f "$compose_file" ] || continue
+        name="$(echo "$project_dir_name" | sed 's/\./-/g')"
+        # Старый формат: роутер/сервис без суффикса -nginx
+        if ! grep -q "traefik\.http\.routers\.${name}\." "$compose_file" 2>/dev/null; then
+            continue
+        fi
+        if grep -q "traefik\.http\.routers\.${name}-nginx\." "$compose_file" 2>/dev/null; then
+            continue
+        fi
+        cp "$compose_file" "$compose_file.bak"
+        sed -e "s/traefik\.http\.routers\.${name}\./traefik.http.routers.${name}-nginx./g" \
+            -e "s/traefik\.http\.services\.${name}\./traefik.http.services.${name}-nginx./g" \
+            -e "s/\.service=${name}\"/.service=${name}-nginx\"/g" \
+            "$compose_file.bak" > "$compose_file"
+        rm -f "$compose_file.bak"
+        echo "  Обновлён: $project_dir_name (роутер/сервис ${name} -> ${name}-nginx)"
+        updated=$((updated + 1))
+    done
+    if [ "$updated" -gt 0 ]; then
+        echo "Готово: обновлено проектов $updated. Перезапустите Traefik и хосты: hostctl.sh infra-restart; hostctl.sh start <host>."
+    else
+        echo "Проекты уже используют новый формат имён Traefik (NAME-nginx)."
     fi
 }
 
@@ -3971,9 +4006,16 @@ set_php_host() {
     if grep -q 'image: mysql' "$compose_file" 2>/dev/null; then
         if [ "$version_input" = "5.6" ]; then
             sed -i.bak -E 's/image: mysql:8\.0/image: mysql:5.7/' "$compose_file" 2>/dev/null || true
+            # MySQL 5.7 нет образа для arm64 (Apple M1/M2) — добавить platform: linux/amd64 если ещё нет
+            if ! grep -q 'platform: linux/amd64' "$compose_file" 2>/dev/null; then
+                sed -i.bak -E '/image: mysql:5\.7/a\
+    platform: linux/amd64
+' "$compose_file" 2>/dev/null || true
+            fi
             echo "   ⚠️  Внимание: для PHP 5.6 используется MySQL 5.7. Если ранее был MySQL 8.0, при следующем start/restart контейнер БД будет пересоздан. При несовместимости данных сделайте дамп и восстановление."
         else
             sed -i.bak -E 's/image: mysql:5\.7/image: mysql:8.0/' "$compose_file" 2>/dev/null || true
+            sed -i.bak -E '/^[[:space:]]*platform: linux\/amd64[[:space:]]*$/d' "$compose_file" 2>/dev/null || true
             echo "   ⚠️  Внимание: для PHP $version_input используется MySQL 8.0. Если ранее был MySQL 5.7, при следующем start/restart контейнер БД будет пересоздан. При несовместимости данных сделайте дамп и восстановление."
         fi
     fi
@@ -4868,6 +4910,9 @@ main() {
         repair-link)
             [ "$#" -ge 1 ] || { echo "Usage: hostctl.sh repair-link <link_host>"; usage; exit 1; }
             repair_link_symlinks "$1"
+            ;;
+        fix-traefik-routes)
+            fix_traefik_routes
             ;;
         help|-h|--help)
             usage
