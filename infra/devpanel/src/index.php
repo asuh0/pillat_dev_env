@@ -1671,7 +1671,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         case 'set-php':
             $projectName = trim($_POST['project_name'] ?? '');
             $phpVersion = trim($_POST['php_version'] ?? '');
-            $allowedVersions = ['8.1', '8.2', '8.3', '8.4'];
+            $allowedVersions = ['7.4', '8.1', '8.2', '8.3', '8.4'];
             if (empty($projectName) || !preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
                 $actionResult = ['type' => 'error', 'message' => 'Некорректное имя проекта.'];
                 break;
@@ -2456,7 +2456,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                                 <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
                                                 <input type="hidden" name="ajax" value="1">
                                                 <select name="php_version" class="form-select form-select-sm" style="width: auto;">
-                                                    <?php foreach (['8.1', '8.2', '8.3', '8.4'] as $v): ?>
+                                                    <?php foreach (['7.4', '8.1', '8.2', '8.3', '8.4'] as $v): ?>
                                                     <option value="<?= $v ?>" <?= ($metadata['php_version'] ?? '') === $v ? 'selected' : '' ?>><?= $v ?></option>
                                                     <?php endforeach; ?>
                                                 </select>
@@ -2863,7 +2863,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                             let offset = Number.isFinite(Number(data.offset)) ? Number(data.offset) : 0;
                             const jobId = data.job_id;
                             const pollStartedAt = Date.now();
-                            const pollTimeoutMs = 25 * 60 * 1000; // 25 мин (первая сборка PHP-образа с apk/perl может быть долгой)
+                            const pollTimeoutMs = 50 * 60 * 1000; // 50 мин (первая сборка PHP-образа: apk, gcc, pecl — может быть очень долгой)
 
                             const pollStatus = () => {
                                 if (Date.now() - pollStartedAt > pollTimeoutMs) {
@@ -2871,7 +2871,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                     modalTitle.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Таймаут ожидания';
                                     setCreateErrorAlertKind('error');
                                     errorAlert.style.display = 'block';
-                                    errorAlert.querySelector('.alert-message').textContent = 'Превышено время ожидания статуса фоновой задачи.';
+                                    errorAlert.querySelector('.alert-message').textContent = 'Превышено время ожидания статуса фоновой задачи. Сборка образа могла ещё идти — обновите страницу: если проект появится в списке, создание завершилось успешно.';
                                     restoreSubmitButton();
                                     return;
                                 }
@@ -3072,7 +3072,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     var offset = Number.isFinite(Number(data.offset)) ? Number(data.offset) : 0;
                     var jobId = data.job_id;
                     var pollStartedAt = Date.now();
-                    var pollTimeoutMs = 25 * 60 * 1000; // 25 мин для set-php/start/restart (сборка образа)
+                    var pollTimeoutMs = 50 * 60 * 1000; // 50 мин для set-php/start/restart (сборка образа)
 
                     function pollStatus() {
                         if (Date.now() - pollStartedAt > pollTimeoutMs) {
@@ -3246,7 +3246,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     var jobId = data.job_id;
                     var statusAction = action === 'restart' ? 'restart_status' : 'start_status';
                     var pollStartedAt = Date.now();
-                    var pollTimeoutMs = 25 * 60 * 1000; // 25 мин для set-php/start/restart (сборка образа)
+                    var pollTimeoutMs = 50 * 60 * 1000; // 50 мин для set-php/start/restart (сборка образа)
 
                     function pollStatus() {
                         if (Date.now() - pollStartedAt > pollTimeoutMs) {

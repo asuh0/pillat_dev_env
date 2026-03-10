@@ -3904,20 +3904,21 @@ set_php_host() {
 
     if [ -z "$version_input" ]; then
         echo "Usage: hostctl.sh set-php <host> <version>"
-        echo "  version: 8.1, 8.2, 8.3 или 8.4"
+        echo "  version: 7.4, 8.1, 8.2, 8.3 или 8.4"
         usage
         exit 1
     fi
 
     # Валидация версии до разрешения хоста (чтобы сразу сообщать о неподдерживаемой версии).
     case "$version_input" in
+        7.4) php_suffix="74" ;;
         8.1) php_suffix="81" ;;
         8.2) php_suffix="82" ;;
         8.3) php_suffix="83" ;;
         8.4) php_suffix="84" ;;
         *)
             echo "Error: неподдерживаемая версия PHP: $version_input"
-            echo "Доступные версии: 8.1 8.2 8.3 8.4"
+            echo "Доступные версии: 7.4 8.1 8.2 8.3 8.4"
             exit 1
             ;;
     esac
@@ -3926,7 +3927,7 @@ set_php_host() {
     if [ ! -f "$template_file" ]; then
         echo "Error: шаблон для PHP $version_input не найден: $template_file"
         printf "Доступные: "
-        for ver in 8.1 8.2 8.3 8.4; do
+        for ver in 7.4 8.1 8.2 8.3 8.4; do
             s="${ver//./}"
             [ -f "$INFRA_DIR/templates/php/Dockerfile.php$s" ] && printf "%s " "$ver"
         done
@@ -3958,12 +3959,12 @@ set_php_host() {
 
     echo "🔄 Переключение PHP хоста '$project_dir_name' на $version_input..."
 
-    if ! sed -i.bak -E "s/Dockerfile\.php(81|82|83|84)/Dockerfile.php$php_suffix/" "$compose_file"; then
+    if ! sed -i.bak -E "s/Dockerfile\.php(74|81|82|83|84)/Dockerfile.php$php_suffix/" "$compose_file"; then
         echo "Error: не удалось обновить docker-compose.yml"
         exit 1
     fi
     # Обновить build args PHP_VERSION в compose (иначе переопределит ARG из Dockerfile и будет собираться не та версия)
-    sed -i.bak -E "s/(PHP_VERSION:[[:space:]]*)(8\.[1-4])/\1$version_input/" "$compose_file" 2>/dev/null || true
+    sed -i.bak -E "s/(PHP_VERSION:[[:space:]]*)(7\.4|8\.[1-4])/\1$version_input/" "$compose_file" 2>/dev/null || true
     rm -f "$compose_file.bak"
 
     cp "$template_file" "$project_dir/Dockerfile.php$php_suffix"

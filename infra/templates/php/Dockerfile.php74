@@ -1,0 +1,47 @@
+ARG PHP_VERSION=7.4
+FROM php:${PHP_VERSION}-fpm-alpine
+ARG PHP_VERSION=7.4
+
+# Установка зависимостей для сборки расширений. PHPIZE_DEPS тянет autoconf → perl (нужен при сборке).
+# libzip-dev требует: bzip2-dev, xz-dev, zlib-dev, zstd-dev, pkgconf.
+RUN apk update && apk add --no-cache \
+    $PHPIZE_DEPS \
+    git \
+    curl \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    freetype-dev \
+    oniguruma-dev \
+    bzip2-dev \
+    xz-dev \
+    zlib-dev \
+    zstd-dev \
+    pkgconf \
+    libzip-dev \
+    mysql-client \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        mysqli \
+        pdo_mysql \
+        zip \
+        mbstring \
+        opcache
+
+# Установка Xdebug: для PHP 7.4 совместима ветка 3.1.x (pecl, apk-пакета php74-pecl-xdebug может не быть в базовом Alpine)
+RUN apk add --no-cache php74-pecl-xdebug 2>/dev/null \
+    || ( pecl install xdebug-3.1.6 || pecl install xdebug ) \
+    && docker-php-ext-enable xdebug || true
+
+# Установка Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# Конфигурация PHP
+COPY php.ini /usr/local/etc/php/conf.d/custom.ini
+COPY xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
+
+# Рабочая директория
+WORKDIR /opt/www
+
+# Права доступа
+RUN chown -R www-data:www-data /opt/www
