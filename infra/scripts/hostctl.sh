@@ -923,6 +923,12 @@ rewrite_compose_paths_for_daemon() {
         -v host_projects_dir="$host_projects_dir" \
         -v host_logs_dir="$host_logs_dir" \
         -v host="$host" '
+        BEGIN {
+            # Windows: в YAML внутри кавычек \ — escape; пути с \ дают "unknown escape character". Используем /.
+            gsub(/\\/, "/", host_project_dir)
+            gsub(/\\/, "/", host_projects_dir)
+            gsub(/\\/, "/", host_logs_dir)
+        }
         {
             if ($0 ~ /^[[:space:]]*context:[[:space:]]*\.[[:space:]]*$/) {
                 print "      context: \"" host_project_dir "\""
@@ -2399,6 +2405,10 @@ runtime_host_compose() {
                     -v container_project_dir="$project_dir" \
                     -v host_project_dir="$host_project_dir" \
                     -v host_logs_dir="$host_logs_dir" '
+                    BEGIN {
+                        # Windows: в YAML внутри кавычек \ — escape; пути с \ дают "unknown escape character". Используем /.
+                        gsub(/\\/, "/", host_project_dir)
+                    }
                     {
                         # build context всегда контейнерный путь (читается docker compose CLI внутри devpanel)
                         if ($0 ~ /^[[:space:]]*context:[[:space:]]*\.[[:space:]]*$/ ||
