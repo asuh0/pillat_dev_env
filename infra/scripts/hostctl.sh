@@ -713,6 +713,67 @@ env_set_key() {
     mv "$tmp_file" "$file"
 }
 
+choose_xdebug_port() {
+    # Базовый порт Xdebug по умолчанию
+    local base_port=9003
+    local max_port=9100
+    local used_ports=""
+
+    if [ -d "$PROJECTS_DIR" ]; then
+        local env_file=""
+        for env_file in "$PROJECTS_DIR"/*/.env; do
+            [ -f "$env_file" ] || continue
+            local p=""
+            p="$(env_get_key "$env_file" "XDEBUG_PORT")"
+            if [ -n "$p" ]; then
+                used_ports="$used_ports $p"
+            fi
+        done
+    fi
+
+    local port="$base_port"
+    while [ "$port" -le "$max_port" ]; do
+        local taken="0"
+        for up in $used_ports; do
+            if [ "$up" = "$port" ]; then
+                taken="1"
+                break
+            fi
+        done
+        if [ "$taken" = "0" ]; then
+            echo "$port"
+            return 0
+        fi
+        port=$((port + 1))
+    done
+
+    # fallback: вернуть базовый порт
+    echo "$base_port"
+}
+
+ensure_project_xdebug_port() {
+    local project_dir="$1"
+    local env_file="$project_dir/.env"
+    local port=""
+
+    [ -f "$env_file" ] || return 0
+
+    port="$(env_get_key "$env_file" "XDEBUG_PORT")"
+    if [ -z "$port" ]; then
+        port="$(choose_xdebug_port)"
+        if [ -n "$port" ]; then
+            env_set_key "$env_file" "XDEBUG_PORT" "$port"
+            echo "   ℹ️  Назначен порт Xdebug для проекта: XDEBUG_PORT=$port"
+        fi
+    fi
+
+    if [ -n "$port" ] && command -v python3 >/dev/null 2>&1; then
+        if [ -f "$SCRIPT_DIR/update-xdebug-port.py" ]; then
+            python3 "$SCRIPT_DIR/update-xdebug-port.py" "$project_dir" "$port" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
 require_python3() {
     local mode="${1:-required}" # required|optional
     local context="${2:-unknown}"
@@ -3829,6 +3890,7 @@ start_host() {
 
     ensure_php_ini_mount_in_compose "$compose_file" "$project_dir" || true
     ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
+    ensure_project_xdebug_port "$project_dir" || true
 
     # Если Dockerfile без mysqli (Bitrix restore.php требует) — подменить шаблоном и пересобрать.
     local need_rebuild_mysqli="0"
