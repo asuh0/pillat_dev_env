@@ -47,9 +47,9 @@ RUN git clone --depth 1 --branch PHP-5.6 https://github.com/php/php-src.git /tmp
     && echo 'extension=mysql.so' > /usr/local/etc/php/conf.d/docker-php-ext-mysql.ini \
     && rm -rf /tmp/php-src
 
-# Xdebug 2.5.x для PHP 5.6 (3.x требует PHP 7+)
+# Xdebug 2.5.x для PHP 5.6 (3.x требует PHP 7+), только PECL
 RUN pecl install xdebug-2.5.5 \
-    && docker-php-ext-enable xdebug || true
+    && docker-php-ext-enable xdebug
 
 # Composer 1.x (2.x требует PHP 7.2+)
 COPY --from=composer:1 /usr/bin/composer /usr/bin/composer

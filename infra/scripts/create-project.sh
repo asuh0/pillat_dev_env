@@ -327,11 +327,13 @@ services:
       - ./www:/opt/www
       - ./logs/php:/var/log/php
       - ./php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./xdebug.ini:/usr/local/etc/php/conf.d/xdebug.ini:ro
       - ./php-fpm-error-log.conf:/usr/local/etc/php-fpm.d/zz-project-error-log.conf:ro
     environment:
       - PHP_IDE_CONFIG=serverName=${PROJECT_NAME}
-      - XDEBUG_CONFIG=client_host=host.docker.internal
       - TZ=\${TZ:-Europe/Moscow}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - infra_proxy
     labels:
@@ -463,17 +465,16 @@ RUN apk add --no-cache \\
         mbstring \\
         opcache
 
-# Установка Xdebug (совместимый вариант для разных версий PHP)
-RUN set -eux; \\
-    if ! pecl install xdebug; then \\
-        case "\${PHP_VERSION}" in \\
-            5.6) pecl install xdebug-2.5.5 ;; \\
-            7.4) pecl install xdebug-3.1.6 ;; \\
-            8.0|8.1) pecl install xdebug-3.3.2 ;; \\
-            *) pecl install xdebug ;; \\
-        esac; \\
-    fi; \\
-    docker-php-ext-enable xdebug
+# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine, после сборки удаляем)
+RUN apk add --no-cache linux-headers \\
+    && case "\${PHP_VERSION}" in \\
+        7.4) pecl install xdebug-3.1.6 ;; \\
+        8.0|8.1) pecl install xdebug-3.3.2 ;; \\
+        8.2|8.3|8.4) pecl install xdebug-3.4.2 ;; \\
+        *) pecl install xdebug ;; \\
+    esac \\
+    && docker-php-ext-enable xdebug \\
+    && apk del linux-headers
 
 # Конфигурация PHP
 COPY php.ini /usr/local/etc/php/conf.d/custom.ini
@@ -510,7 +511,7 @@ opcache.revalidate_freq=${OPCACHE_REVALIDATE_FREQ}
 
 EOF
 
-# Создание xdebug.ini
+# Создание xdebug.ini (client_host — единый источник правды вместе с extra_hosts в compose)
 cat > "$PROJECT_DIR/xdebug.ini" <<EOF
 [xdebug]
 xdebug.mode=debug,develop
@@ -519,6 +520,8 @@ xdebug.client_host=host.docker.internal
 xdebug.client_port=9003
 xdebug.log=/var/log/php/xdebug.log
 xdebug.idekey=PHPSTORM
+; Уровень лога: 1 по умолчанию; при диагностике можно поднять до 7
+xdebug.log_level=1
 
 EOF
 
@@ -568,6 +571,7 @@ cat > "$PROJECT_DIR/.vscode/launch.json" <<'VSCODE_LAUNCH'
       "name": "Listen for Xdebug",
       "type": "php",
       "request": "launch",
+      "hostname": "0.0.0.0",
       "port": 9003,
       "pathMappings": {
         "/opt/www": "${workspaceFolder}/www"

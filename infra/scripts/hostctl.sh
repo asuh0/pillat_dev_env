@@ -80,6 +80,7 @@ Usage:
   hostctl.sh repair-link <link_host>
   hostctl.sh fix-traefik-routes
   hostctl.sh migrate-devcontainer-to-vscode
+  hostctl.sh migrate-xdebug-config
 
 Notes:
   create <host> in interactive terminal automatically starts dialog mode
@@ -1394,6 +1395,7 @@ migrate_devcontainer_to_vscode() {
       "name": "Listen for Xdebug",
       "type": "php",
       "request": "launch",
+      "hostname": "0.0.0.0",
       "port": 9003,
       "pathMappings": {
         "/opt/www": "${workspaceFolder}/www"
@@ -1414,6 +1416,32 @@ MIGRATE_VSCODE_EXT
         echo "  Обновлён .vscode: $project_dir_name"
     done
     echo "Готово: обработано проектов с docker-compose.yml: $n (удалено каталогов .devcontainer: $removed)."
+}
+
+# Xdebug: compose (xdebug.ini volume, extra_hosts, без XDEBUG_CONFIG), xdebug.ini, launch.json, Dockerfile.php* (PECL + linux-headers на Alpine). Исключение: famil.pillat.
+migrate_xdebug_config() {
+    local project_dir_name="" compose_file="" n=0
+    [ -d "$PROJECTS_DIR" ] || { echo "Каталог проектов не найден."; return 1; }
+    require_python3 optional "migrate_xdebug_config" || return 1
+    [ -f "$SCRIPT_DIR/migrate-xdebug-project-layout.py" ] || {
+        echo "Не найден migrate-xdebug-project-layout.py"
+        return 1
+    }
+    for project_dir_name in "$PROJECTS_DIR"/*/; do
+        [ -d "$project_dir_name" ] || continue
+        project_dir_name="$(basename "$project_dir_name")"
+        case "$project_dir_name" in
+            .*) continue ;;
+            famil.pillat) continue ;;
+        esac
+        compose_file="$PROJECTS_DIR/$project_dir_name/docker-compose.yml"
+        [ -f "$compose_file" ] || continue
+        n=$((n + 1))
+        echo "  $project_dir_name"
+        python3 "$SCRIPT_DIR/migrate-xdebug-project-layout.py" "$PROJECTS_DIR/$project_dir_name" || true
+        patch_project_dockerfiles_for_xdebug "$PROJECTS_DIR/$project_dir_name" >/dev/null
+    done
+    echo "Готово: проектов (кроме famil.pillat): $n. Пересоберите образ PHP (compose build php / set-php)."
 }
 
 read_core_db_values() {
@@ -1706,25 +1734,29 @@ import sys
 project_dir = pathlib.Path(sys.argv[1])
 updated = 0
 
+# Блок от комментария про Xdebug до docker-php-ext-enable xdebug (опц. || true)
 xdebug_block_re = re.compile(
-    r"# Установка Xdebug(?:[^\n]*)?\n"
-    r"RUN\s+.*?docker-php-ext-enable xdebug(?:\s*\|\|\s*true)?",
-    re.S,
+    r"# [^\n]*[Xx]debug[^\n]*\n"
+    r"RUN[\s\S]*?docker-php-ext-enable xdebug(?:\s*\|\|\s*true)?",
 )
 
-new_block = (
-    "# Установка Xdebug (совместимый вариант для разных версий PHP)\n"
-    "RUN set -eux; \\\n"
-    "    if ! pecl install xdebug; then \\\n"
-    "        case \"${PHP_VERSION}\" in \\\n"
-    "            5.6) pecl install xdebug-2.5.5 ;; \\\n"
-    "            7.4) pecl install xdebug-3.1.6 ;; \\\n"
-    "            8.0|8.1) pecl install xdebug-3.3.2 ;; \\\n"
-    "            8.2|8.3|8.4) pecl install xdebug-3.4.2 ;; \\\n"
-    "            *) pecl install xdebug ;; \\\n"
-    "        esac; \\\n"
-    "    fi; \\\n"
-    "    docker-php-ext-enable xdebug"
+alpine_xdebug = (
+    "# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine, после сборки удаляем)\n"
+    "RUN apk add --no-cache linux-headers \\\n"
+    "    && case \"${PHP_VERSION}\" in \\\n"
+    "        7.4) pecl install xdebug-3.1.6 ;; \\\n"
+    "        8.0|8.1) pecl install xdebug-3.3.2 ;; \\\n"
+    "        8.2|8.3|8.4) pecl install xdebug-3.4.2 ;; \\\n"
+    "        *) pecl install xdebug ;; \\\n"
+    "    esac \\\n"
+    "    && docker-php-ext-enable xdebug \\\n"
+    "    && apk del linux-headers"
+)
+
+debian56_xdebug = (
+    "# Xdebug 2.5.x для PHP 5.6 (3.x требует PHP 7+), только PECL\n"
+    "RUN pecl install xdebug-2.5.5 \\\n"
+    "    && docker-php-ext-enable xdebug"
 )
 
 for dockerfile in sorted(project_dir.glob("Dockerfile.php*")):
@@ -1733,16 +1765,24 @@ for dockerfile in sorted(project_dir.glob("Dockerfile.php*")):
 
     text = dockerfile.read_text(encoding="utf-8", errors="ignore")
     original = text
+    is_debian56 = dockerfile.name == "Dockerfile.php56" or (
+        "php:5.6-fpm" in text and "fpm-alpine" not in text
+    )
+    is_alpine = "fpm-alpine" in text
 
-    if "$PHPIZE_DEPS" not in text:
-        text = text.replace(
-            "RUN apk add --no-cache \\\n    git \\\n",
-            "RUN apk add --no-cache \\\n    $PHPIZE_DEPS \\\n    linux-headers \\\n    git \\\n",
-            1,
-        )
+    def replace_xdebug(m):
+        blk = m.group(0)
+        if "apk del linux-headers" in blk and "pecl install" in blk:
+            return blk
+        if is_debian56:
+            return debian56_xdebug
+        if is_alpine:
+            return alpine_xdebug
+        return blk
 
-    if "docker-php-ext-enable xdebug" in text and "совместимый вариант для разных версий PHP" not in text:
-        text, _ = xdebug_block_re.subn(new_block, text, count=1)
+    text, n = xdebug_block_re.subn(replace_xdebug, text, count=1)
+    if n == 0 and "docker-php-ext-enable xdebug || true" in text:
+        text = text.replace("docker-php-ext-enable xdebug || true", "docker-php-ext-enable xdebug")
 
     if text != original:
         dockerfile.write_text(text, encoding="utf-8")
@@ -4976,6 +5016,9 @@ main() {
             ;;
         migrate-devcontainer-to-vscode)
             migrate_devcontainer_to_vscode
+            ;;
+        migrate-xdebug-config)
+            migrate_xdebug_config
             ;;
         help|-h|--help)
             usage

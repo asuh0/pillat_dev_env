@@ -33,10 +33,11 @@ RUN apk update && apk add --no-cache \
         intl \
         bcmath
 
-# Установка Xdebug (совместимый вариант для разных версий PHP): apk (Alpine), при отсутствии — pecl; при сбое образ без xdebug
-RUN apk add --no-cache php84-pecl-xdebug 2>/dev/null \
-    || ( pecl install xdebug-3.4.2 || pecl install xdebug ) \
-    && docker-php-ext-enable xdebug || true
+# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine, после сборки удаляем)
+RUN apk add --no-cache linux-headers \
+    && pecl install xdebug-3.4.2 \
+    && docker-php-ext-enable xdebug \
+    && apk del linux-headers
 
 # Установка Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer

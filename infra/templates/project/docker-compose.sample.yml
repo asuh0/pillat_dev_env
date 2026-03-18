@@ -14,10 +14,13 @@ services:
     volumes:
       - ./www:/opt/www
       - ./logs/php:/var/log/php
+      - ./php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./xdebug.ini:/usr/local/etc/php/conf.d/xdebug.ini:ro
     environment:
       - PHP_IDE_CONFIG=serverName=project4-static.loc
-      - XDEBUG_CONFIG=client_host=host.docker.internal
       - TZ=${TZ:-Europe/Moscow}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - infra_proxy
     labels:
