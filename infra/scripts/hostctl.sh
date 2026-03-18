@@ -79,6 +79,7 @@ Usage:
   hostctl.sh link-db-host <link_host>
   hostctl.sh repair-link <link_host>
   hostctl.sh fix-traefik-routes
+  hostctl.sh migrate-devcontainer-to-vscode
 
 Notes:
   create <host> in interactive terminal automatically starts dialog mode
@@ -1364,6 +1365,55 @@ fix_traefik_routes() {
     else
         echo "Проекты уже используют новый формат имён Traefik (NAME-nginx)."
     fi
+}
+
+# Удалить .devcontainer, записать .vscode/launch.json и extensions.json (как у create-project).
+migrate_devcontainer_to_vscode() {
+    local project_dir_name="" compose_file="" n=0 removed=0
+    [ -d "$PROJECTS_DIR" ] || { echo "Каталог проектов не найден."; return 1; }
+    for project_dir_name in "$PROJECTS_DIR"/*/; do
+        [ -d "$project_dir_name" ] || continue
+        project_dir_name="$(basename "$project_dir_name")"
+        case "$project_dir_name" in
+            .*) continue ;;
+        esac
+        compose_file="$PROJECTS_DIR/$project_dir_name/docker-compose.yml"
+        [ -f "$compose_file" ] || continue
+        n=$((n + 1))
+        if [ -d "$PROJECTS_DIR/$project_dir_name/.devcontainer" ]; then
+            rm -rf "$PROJECTS_DIR/$project_dir_name/.devcontainer"
+            removed=$((removed + 1))
+            echo "  Удалён .devcontainer: $project_dir_name"
+        fi
+        mkdir -p "$PROJECTS_DIR/$project_dir_name/.vscode"
+        cat > "$PROJECTS_DIR/$project_dir_name/.vscode/launch.json" <<'MIGRATE_VSCODE_LAUNCH'
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Listen for Xdebug",
+      "type": "php",
+      "request": "launch",
+      "port": 9003,
+      "pathMappings": {
+        "/opt/www": "${workspaceFolder}/www"
+      },
+      "log": true
+    }
+  ]
+}
+MIGRATE_VSCODE_LAUNCH
+        cat > "$PROJECTS_DIR/$project_dir_name/.vscode/extensions.json" <<'MIGRATE_VSCODE_EXT'
+{
+  "recommendations": [
+    "xdebug.php-debug",
+    "bmewburn.vscode-intelephense-client"
+  ]
+}
+MIGRATE_VSCODE_EXT
+        echo "  Обновлён .vscode: $project_dir_name"
+    done
+    echo "Готово: обработано проектов с docker-compose.yml: $n (удалено каталогов .devcontainer: $removed)."
 }
 
 read_core_db_values() {
@@ -4923,6 +4973,9 @@ main() {
             ;;
         fix-traefik-routes)
             fix_traefik_routes
+            ;;
+        migrate-devcontainer-to-vscode)
+            migrate_devcontainer_to_vscode
             ;;
         help|-h|--help)
             usage

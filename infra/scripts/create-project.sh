@@ -278,7 +278,7 @@ echo "   🔌 DB внешний порт: $DB_EXTERNAL_PORT_VALUE"
 echo "   📋 Пресет: $PRESET"
 
 # Создание структуры директорий
-mkdir -p "$PROJECT_DIR"/{www,nginx,.devcontainer,logs/php,logs/nginx}
+mkdir -p "$PROJECT_DIR"/{www,nginx,.vscode,logs/php,logs/nginx}
 touch "$PROJECT_DIR/logs/php/error.log"
 chmod 666 "$PROJECT_DIR/logs/php/error.log" 2>/dev/null || true
 chmod 777 "$PROJECT_DIR/logs/php" 2>/dev/null || true
@@ -558,34 +558,9 @@ server {
 
 EOF
 
-# Создание .devcontainer
-cat > "$PROJECT_DIR/.devcontainer/devcontainer.json" <<EOF
-{
-  "name": "${PROJECT_NAME}",
-  "dockerComposeFile": "../docker-compose.yml",
-  "service": "php",
-  "workspaceFolder": "/opt/www",
-  "shutdownAction": "none",
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "xdebug.php-debug",
-        "bmewburn.vscode-intelephense-client"
-      ],
-      "settings": {
-        "php.validate.executablePath": "/usr/local/bin/php"
-      }
-    }
-  },
-  "forwardPorts": [9003],
-  "postCreateCommand": "chmod -R 777 /opt/www"
-}
-
-EOF
-
-# Создание launch.json для Xdebug
-mkdir -p "$PROJECT_DIR/.devcontainer/.vscode"
-cat > "$PROJECT_DIR/.devcontainer/.vscode/launch.json" <<EOF
+# Cursor/VS Code: Xdebug и рекомендации расширений в корне проекта
+mkdir -p "$PROJECT_DIR/.vscode"
+cat > "$PROJECT_DIR/.vscode/launch.json" <<'VSCODE_LAUNCH'
 {
   "version": "0.2.0",
   "configurations": [
@@ -595,14 +570,22 @@ cat > "$PROJECT_DIR/.devcontainer/.vscode/launch.json" <<EOF
       "request": "launch",
       "port": 9003,
       "pathMappings": {
-        "/opt/www": "\${workspaceFolder}/www"
+        "/opt/www": "${workspaceFolder}/www"
       },
       "log": true
     }
   ]
 }
+VSCODE_LAUNCH
 
-EOF
+cat > "$PROJECT_DIR/.vscode/extensions.json" <<'VSCODE_EXT'
+{
+  "recommendations": [
+    "xdebug.php-debug",
+    "bmewburn.vscode-intelephense-client"
+  ]
+}
+VSCODE_EXT
 
 # Переменные для подстановки в шаблонах пресета
 DB_HOST="$DB_SERVICE_NAME"
@@ -722,7 +705,7 @@ cat > "$PROJECT_DIR/README.md" <<EOF
 
 ## Xdebug
 
-Настройте IDE для прослушивания порта 9003.
+Настройте IDE для прослушивания порта 9003 (в Cursor/VS Code откройте папку проекта — конфигурация в \`.vscode/launch.json\`).
 
 EOF
 
