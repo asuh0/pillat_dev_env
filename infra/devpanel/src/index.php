@@ -693,10 +693,36 @@ function getContainerConfig($containerName) {
 // Получение статуса контейнеров проекта
 // Контейнер devpanel уже работает от root, поэтому команды выполняются напрямую
 // Фильтр: только контейнеры, принадлежащие проекту (префикс name- или name_), не link-хостов
-function getProjectContainers($projectName) {
+function getExpectedProjectContainersFromCompose($projectPath) {
+    $names = [];
+    $composeFile = rtrim((string)$projectPath, '/') . '/docker-compose.yml';
+    if (!is_file($composeFile) || !is_readable($composeFile)) {
+        return $names;
+    }
+    $yaml = @file_get_contents($composeFile);
+    if (!is_string($yaml) || $yaml === '') {
+        return $names;
+    }
+    if (preg_match_all('/^\s*container_name:\s*([^\s#]+)\s*$/mi', $yaml, $m)) {
+        foreach (($m[1] ?? []) as $rawName) {
+            $name = trim((string)$rawName, " \t\n\r\0\x0B\"'");
+            if ($name !== '') {
+                $names[$name] = true;
+            }
+        }
+    }
+    return $names;
+}
+
+function getProjectContainers($projectName, $projectPath = null) {
     $containers = [];
     $output = [];
-    exec("docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' --filter 'name={$projectName}' 2>&1", $output, $return);
+    $expectedContainers = [];
+    if (is_string($projectPath) && $projectPath !== '') {
+        $expectedContainers = getExpectedProjectContainersFromCompose($projectPath);
+    }
+
+    exec("docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1", $output, $return);
     
     // Если ошибка доступа к docker
     if ($return !== 0 && !empty($output)) {
@@ -718,6 +744,11 @@ function getProjectContainers($projectName) {
         $parts = preg_split('/\s+/', $line, 3);
         if (count($parts) >= 2) {
             $containerName = $parts[0];
+            if (!empty($expectedContainers)) {
+                if (!isset($expectedContainers[$containerName])) {
+                    continue;
+                }
+            }
             $belongsToProject = ($containerName === $projectName);
             if (!$belongsToProject) {
                 foreach ($prefixes as $pref) {
@@ -730,7 +761,7 @@ function getProjectContainers($projectName) {
             if (!$belongsToProject) {
                 continue;
             }
-            $containers[] = [
+            $containers[$containerName] = [
                 'name' => $containerName,
                 'status' => $parts[1] ?? 'unknown',
                 'image' => $parts[2] ?? '',
@@ -738,7 +769,7 @@ function getProjectContainers($projectName) {
             ];
         }
     }
-    return $containers;
+    return array_values($containers);
 }
 
 /**
@@ -2097,7 +2128,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
         <div class="header-status d-none d-sm-flex">
             <?php
             $baseHref = htmlspecialchars($_SERVER['SCRIPT_NAME'] ?? '/index.php');
-            $infraUp = 0; $infraTotal = 7;
+            $infraUp = 0;
+            $infraTotal = ($infraStatus && !$infraStatus['error'] && isset($infraStatus['services']) && is_array($infraStatus['services']))
+                ? count($infraStatus['services'])
+                : 0;
             if ($infraStatus && !$infraStatus['error']) {
                 foreach ($infraStatus['services'] as $s) { if ($s['status'] === 'Up') $infraUp++; }
             }
@@ -2380,7 +2414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                     </div>
                 <?php else: ?>
                     <?php foreach ($projects as $project): 
-                        $containers = getProjectContainers($project['name']);
+                        $containers = getProjectContainers($project['name'], $project['path']);
                         $metadata = getProjectMetadata($project['path'], $hostsRegistry, $bitrixCoreByOwner, $bitrixBindingByHost);
                         $runningCount = 0;
                         foreach ($containers as $container) {

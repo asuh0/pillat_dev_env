@@ -167,6 +167,13 @@ canonicalize_host_name() {
     normalized="$(normalize_token "$raw_host")"
 
     if is_valid_host_label "$normalized"; then
+        # Для existing-операций сохраняем legacy short-host как есть, если проект реально существует.
+        if [ "$mode" = "existing" ]; then
+            if [ -d "$PROJECTS_DIR/$normalized" ] || registry_has_host "$normalized"; then
+                echo "$normalized"
+                return 0
+            fi
+        fi
         echo "${normalized}.${domain_suffix}"
         return 0
     fi
