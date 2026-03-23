@@ -69,6 +69,8 @@ bash ./infra/scripts/start-all.sh
 127.0.0.1 grafana.loc
 ```
 
+Логи контейнеров в Loki (stdout/stderr через Promtail + Docker): см. `infra/docs/GRAFANA-CONTAINER-STDOUT-STDERR.md`.
+
 Актуальный список доменов см. в DevPanel (блок «Конфигурация /etc/hosts»).
 
 5) Проверьте доступность DevPanel:

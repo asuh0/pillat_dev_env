@@ -130,6 +130,34 @@ services:
         clients:
           - url: http://loki:3100/loki/api/v1/push
         scrape_configs:
+          - job_name: docker
+            docker_sd_configs:
+              - host: unix:///var/run/docker.sock
+                refresh_interval: 5s
+            pipeline_stages:
+              - docker: {}
+              - regex:
+                  source: container
+                  expression: '^(?P<project_slug>[a-z0-9][a-z0-9.-]*?)-(php|nginx|mysql|postgres|mariadb|redis|memcached)(?:-[0-9]+)?$'
+              - labels:
+                  stream:
+                  project_slug:
+            relabel_configs:
+              - source_labels: ['__meta_docker_container_name']
+                regex: '/(.*)'
+                target_label: 'container'
+              - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+                regex: '(.+)'
+                target_label: 'compose_project_raw'
+              - source_labels: ['project_slug']
+                regex: '^$'
+                target_label: 'project_slug'
+                replacement: 'infra'
+              - source_labels: ['project_slug']
+                target_label: 'project'
+              - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+                regex: '(.+)'
+                target_label: 'service'
           - job_name: fallback-system
             static_configs:
               - targets:
@@ -167,7 +195,6 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
       - TZ=${TZ:-Europe/Moscow}
 
   devpanel_fallback:

@@ -1,3 +1,6 @@
+# Подстановка ${DOMAIN_SUFFIX:-loc} в лейблах Traefik берётся из окружения при вызове compose.
+# Рекомендуется: `docker compose --env-file .env.global -f docker-compose.shared.yml ...`
+# либо файл `infra/.env` с DOMAIN_SUFFIX (создаётся bootstrap из .env.global).
 networks:
   infra_proxy:
     name: infra_proxy
@@ -159,7 +162,9 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      # grafana-piechart-panel — Angular, в Grafana 12 отключён → цикл установки и ошибки в логах
+      # За Traefik (HTTPS) — корректные редиректы и ссылки в UI
+      - GF_SERVER_ROOT_URL=https://grafana.${DOMAIN_SUFFIX:-loc}/
       - TZ=${TZ:-Europe/Moscow}
 
   devpanel:

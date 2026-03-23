@@ -15,9 +15,20 @@ scrape_configs:
           - localhost
         labels:
           job: traefik
+          project: infra
           __path__: /logs/traefik/*.log
 
   - job_name: php
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '^/projects/(?P<project>[^/]+)/logs/php/.*$'
+      - template:
+          source: project_slug
+          template: '{{ Replace .project "." "-" -1 }}'
+      - labels:
+          project:
+          project_slug:
     static_configs:
       - targets:
           - localhost
@@ -26,6 +37,16 @@ scrape_configs:
           __path__: /projects/*/logs/php/*.log
 
   - job_name: nginx
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '^/projects/(?P<project>[^/]+)/logs/nginx/.*$'
+      - template:
+          source: project_slug
+          template: '{{ Replace .project "." "-" -1 }}'
+      - labels:
+          project:
+          project_slug:
     static_configs:
       - targets:
           - localhost
@@ -39,6 +60,7 @@ scrape_configs:
           - localhost
         labels:
           job: mysql
+          project: infra
           __path__: /logs/db/mysql/*.log
 
   - job_name: postgres
@@ -47,17 +69,37 @@ scrape_configs:
           - localhost
         labels:
           job: postgres
+          project: infra
           __path__: /logs/db/postgres/*.log
 
+  # Логи контейнеров: stdout/stderr через Docker API (docker.sock).
+  # Метка stream=stdout|stderr — из __meta_docker_container_log_stream (если отдаёт движок).
+  # pipeline: docker — разбор JSON-строк docker json-file, если они попали в поток.
   - job_name: docker
     docker_sd_configs:
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
+    pipeline_stages:
+      - docker: {}
+      - regex:
+          source: container
+          expression: '^(?P<project_slug>[a-z0-9][a-z0-9.-]*?)-(php|nginx|mysql|postgres|mariadb|redis|memcached)(?:-[0-9]+)?$'
+      - labels:
+          stream:
+          project_slug:
     relabel_configs:
       - source_labels: ['__meta_docker_container_name']
         regex: '/(.*)'
         target_label: 'container'
-      - source_labels: ['__meta_docker_container_log_stream']
-        target_label: 'stream'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        regex: '(.+)'
+        target_label: 'compose_project_raw'
+      - source_labels: ['project_slug']
+        regex: '^$'
+        target_label: 'project_slug'
+        replacement: 'infra'
+      - source_labels: ['project_slug']
+        target_label: 'project'
       - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        regex: '(.+)'
         target_label: 'service'

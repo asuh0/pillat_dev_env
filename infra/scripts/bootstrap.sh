@@ -91,4 +91,21 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 1
 fi
 
+# 5) Docker Compose подставляет ${DOMAIN_SUFFIX} в лейблы Traefik из `infra/.env` (автозагрузка).
+# Без этого при ручном `docker compose -f docker-compose.shared.yml up` суффикс остаётся «loc» → 404 на *.pillat.
+if [ -f "$INFRA_DIR/.env.global" ]; then
+    d_line="$(grep -E '^DOMAIN_SUFFIX=' "$INFRA_DIR/.env.global" | head -1 || true)"
+    if [ -n "$d_line" ]; then
+        env_local="$INFRA_DIR/.env"
+        tmp="${env_local}.tmp.$$"
+        if [ -f "$env_local" ]; then
+            grep -v '^DOMAIN_SUFFIX=' "$env_local" > "$tmp" 2>/dev/null || : > "$tmp"
+        else
+            : > "$tmp"
+        fi
+        echo "$d_line" >> "$tmp"
+        mv "$tmp" "$env_local"
+    fi
+fi
+
 echo "✅ Bootstrap завершен: скрипты, каталоги и preflight Docker готовы."

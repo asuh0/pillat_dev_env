@@ -613,6 +613,7 @@ shopt -u nullglob
 if [ "$has_env_template" -eq 0 ]; then
     cat > "$PROJECT_DIR/.env.example" <<EOF
 # Настройки проекта ${PROJECT_NAME}
+COMPOSE_PROJECT_NAME=${PROJECT_NAME//./-}
 TZ=Europe/Moscow
 DB_BIND_ADDRESS=${DB_BIND_ADDRESS}
 DB_EXTERNAL_PORT=${DB_EXTERNAL_PORT_VALUE}
@@ -677,6 +678,13 @@ for tpl in "$PRESET_DIR"/*.template "$PRESET_DIR"/.*.template; do
         -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" -e "s|{{PHP_UPSTREAM}}|$PHP_UPSTREAM|g" "$tpl" > "$out"
 done
 shopt -u nullglob
+
+# Гарантируем стабильный compose project name (dash-формат), чтобы labels не слепляли домен.
+if [ -f "$PROJECT_DIR/.env.example" ]; then
+    if ! grep -q '^COMPOSE_PROJECT_NAME=' "$PROJECT_DIR/.env.example"; then
+        printf "\nCOMPOSE_PROJECT_NAME=%s\n" "${PROJECT_NAME//./-}" >> "$PROJECT_DIR/.env.example"
+    fi
+fi
 
 # Создание README для проекта
 cat > "$PROJECT_DIR/README.md" <<EOF

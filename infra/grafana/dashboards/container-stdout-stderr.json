@@ -1,0 +1,219 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-infra"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "Единая метка проекта: `project_slug` (dash-формат, напр. `famil-pillat`). Используйте её для фильтрации всех логов проекта; `project` оставлен для совместимости.",
+        "mode": "markdown"
+      },
+      "title": "Подсказка",
+      "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-infra"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "id": 2,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-infra"
+          },
+          "editorMode": "code",
+          "expr": "{job=\"docker\", project_slug=~\"$project_slug\", container=~\"$container\", stream=~\"$stream\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Docker stdout/stderr (по проекту)",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-infra"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 3,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-infra"
+          },
+          "editorMode": "code",
+          "expr": "{project_slug=~\"$project_slug\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Все логи проекта (любой job)",
+      "type": "logs"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "loki",
+    "docker",
+    "stdout",
+    "stderr"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "loki-infra"
+        },
+        "definition": "label_values({job=~\".+\"}, project_slug)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Проект (slug)",
+        "multi": true,
+        "name": "project_slug",
+        "options": [],
+        "query": "label_values({job=~\".+\"}, project_slug)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "loki-infra"
+        },
+        "definition": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, container)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Контейнер",
+        "multi": true,
+        "name": "container",
+        "options": [],
+        "query": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, container)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "loki-infra"
+        },
+        "definition": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, stream)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Поток",
+        "multi": true,
+        "name": "stream",
+        "options": [],
+        "query": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, stream)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Контейнеры: stdout / stderr (Loki)",
+  "uid": "container-stdout-stderr",
+  "version": 4
+}

@@ -781,6 +781,18 @@ ensure_project_xdebug_port() {
     fi
 }
 
+ensure_project_compose_project_name() {
+    local project_dir="$1"
+    local env_file="$project_dir/.env"
+    local default_slug
+    default_slug="$(basename "$project_dir" | tr '[:upper:]' '[:lower:]' | sed 's/\./-/g')"
+
+    [ -f "$env_file" ] || return 0
+    if [ -n "$default_slug" ]; then
+        env_set_key "$env_file" "COMPOSE_PROJECT_NAME" "$default_slug"
+    fi
+}
+
 require_python3() {
     local mode="${1:-required}" # required|optional
     local context="${2:-unknown}"
@@ -3898,6 +3910,7 @@ start_host() {
     ensure_php_ini_mount_in_compose "$compose_file" "$project_dir" || true
     ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
     ensure_project_xdebug_port "$project_dir" || true
+    ensure_project_compose_project_name "$project_dir" || true
 
     # Если Dockerfile без mysqli (Bitrix restore.php требует) — подменить шаблоном и пересобрать.
     local need_rebuild_mysqli="0"
