@@ -28,11 +28,11 @@ RUN apk update && apk add --no-cache \
         mbstring \
         opcache
 
-# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine, после сборки удаляем)
-RUN apk add --no-cache linux-headers \
+# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine; один apk del через --virtual)
+RUN apk add --no-cache --virtual .xdebug-pecl-deps linux-headers \
     && pecl install xdebug-3.1.6 \
     && docker-php-ext-enable xdebug \
-    && apk del linux-headers
+    && apk del .xdebug-pecl-deps
 
 # Установка Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer

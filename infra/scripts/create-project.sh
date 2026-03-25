@@ -465,8 +465,8 @@ RUN apk add --no-cache \\
         mbstring \\
         opcache
 
-# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine, после сборки удаляем)
-RUN apk add --no-cache linux-headers \\
+# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine; один apk del через --virtual)
+RUN apk add --no-cache --virtual .xdebug-pecl-deps linux-headers \\
     && case "\${PHP_VERSION}" in \\
         7.4) pecl install xdebug-3.1.6 ;; \\
         8.0|8.1) pecl install xdebug-3.3.2 ;; \\
@@ -474,7 +474,7 @@ RUN apk add --no-cache linux-headers \\
         *) pecl install xdebug ;; \\
     esac \\
     && docker-php-ext-enable xdebug \\
-    && apk del linux-headers
+    && apk del .xdebug-pecl-deps
 
 # Конфигурация PHP
 COPY php.ini /usr/local/etc/php/conf.d/custom.ini

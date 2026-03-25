@@ -1814,15 +1814,25 @@ import sys
 project_dir = pathlib.Path(sys.argv[1])
 updated = 0
 
-# Блок от комментария про Xdebug до docker-php-ext-enable xdebug (опц. || true)
+# Блок от комментария про Xdebug до конца RUN, включая хвост «&& apk del linux-headers» (в т.ч. повторы)
+# Хвост [ \t]* у linux-headers / .xdebug-pecl-deps после \\\n — только пробелы/таб, не \\n (иначе съедается пустая строка до #).
+apk_del_tail = (
+    r"(?:"
+    r"[ \t]*&&[ \t]*apk[ \t]+del[ \t]+linux-headers[ \t]*"
+    r"|[ \t]*\\\n[ \t]*&&[ \t]*apk[ \t]+del[ \t]+linux-headers[ \t]*"
+    r"|[ \t]*\\\n[ \t]*&&[ \t]*apk[ \t]+del[ \t]+\.xdebug-pecl-deps[ \t]*"
+    r"|[ \t]*&&[ \t]*apk[ \t]+del[ \t]+\.xdebug-pecl-deps[^\n]*"
+    r")*"
+)
 xdebug_block_re = re.compile(
     r"# [^\n]*[Xx]debug[^\n]*\n"
-    r"RUN[\s\S]*?docker-php-ext-enable xdebug(?:\s*\|\|\s*true)?",
+    r"RUN[\s\S]*?docker-php-ext-enable xdebug(?:\s*\|\|\s*true)?"
+    + apk_del_tail,
 )
 
 alpine_xdebug = (
-    "# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine, после сборки удаляем)\n"
-    "RUN apk add --no-cache linux-headers \\\n"
+    "# Xdebug только через PECL (linux-headers для rtnetlink.h на Alpine; один apk del через --virtual)\n"
+    "RUN apk add --no-cache --virtual .xdebug-pecl-deps linux-headers \\\n"
     "    && case \"${PHP_VERSION}\" in \\\n"
     "        7.4) pecl install xdebug-3.1.6 ;; \\\n"
     "        8.0|8.1) pecl install xdebug-3.3.2 ;; \\\n"
@@ -1830,13 +1840,13 @@ alpine_xdebug = (
     "        *) pecl install xdebug ;; \\\n"
     "    esac \\\n"
     "    && docker-php-ext-enable xdebug \\\n"
-    "    && apk del linux-headers"
+    "    && apk del .xdebug-pecl-deps\n"
 )
 
 debian56_xdebug = (
     "# Xdebug 2.5.x для PHP 5.6 (3.x требует PHP 7+), только PECL\n"
     "RUN pecl install xdebug-2.5.5 \\\n"
-    "    && docker-php-ext-enable xdebug"
+    "    && docker-php-ext-enable xdebug\n"
 )
 
 for dockerfile in sorted(project_dir.glob("Dockerfile.php*")):
@@ -1851,14 +1861,13 @@ for dockerfile in sorted(project_dir.glob("Dockerfile.php*")):
     is_alpine = "fpm-alpine" in text
 
     def replace_xdebug(m):
-        blk = m.group(0)
-        if "apk del linux-headers" in blk and "pecl install" in blk:
-            return blk
         if is_debian56:
             return debian56_xdebug
         if is_alpine:
+            # Всегда нормализуем Alpine-блок: иначе остаются дубликаты «apk del linux-headers»
+            # после частичных правок и сборка падает на втором/третьем del.
             return alpine_xdebug
-        return blk
+        return m.group(0)
 
     text, n = xdebug_block_re.subn(replace_xdebug, text, count=1)
     if n == 0 and "docker-php-ext-enable xdebug || true" in text:
@@ -2524,6 +2533,14 @@ runtime_host_compose() {
     local project_dir="$1"
     shift
 
+    # Подробный вывод build/pull в лог (DevPanel, CI): иначе часть шагов не попадает в файл.
+    local compose_progress=()
+    case "${1:-}" in
+        build|up)
+            compose_progress=(--progress plain)
+            ;;
+    esac
+
     # Docker Compose ожидает .env в каталоге проекта (build и up). project_dir — монт, запись видна на хосте.
     if [ ! -f "$project_dir/.env" ]; then
         if [ -f "$project_dir/.env.example" ]; then
@@ -2622,6 +2639,7 @@ runtime_host_compose() {
                 # --project-directory с host-путём нужен daemon для volumes/build; .env читает CLI по --env-file.
                 # DOCKER_BUILDKIT=0 и COMPOSE_DOCKER_CLI_BUILD=0 — обход требования buildx в контейнере devpanel
                 COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose \
+                    "${compose_progress[@]}" \
                     -f "$tmp_compose" \
                     --project-directory "$host_project_dir" \
                     --env-file "$project_dir/.env" \
@@ -2633,7 +2651,7 @@ runtime_host_compose() {
         fi
     fi
 
-    (cd "$project_dir" && COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose "$@")
+    (cd "$project_dir" && COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose "${compose_progress[@]}" "$@")
 }
 
 runtime_host_up() {
