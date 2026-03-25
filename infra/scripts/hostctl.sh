@@ -41,10 +41,16 @@ INFRA_DEVPANEL_FALLBACK_TLS_VOLUME="infra_traefik_tls_fallback"
 INFRA_ENV_FILE="$INFRA_DIR/.env.global"
 INFRA_RUNTIME_MODE_FILE="$CONFIG_DIR/infra-runtime-mode"
 HOSTCTL_LOG_FILE="$LOGS_DIR/hostctl.log"
+LOGGING_CONFIG_FILE="$REGISTRY_DIR/logging-config.env"
+LOKI_DEFAULT_URL="http://127.0.0.1:3100"
+DEFAULT_INFRA_FILE_LOGS="off"
+DEFAULT_PROJECT_FILE_LOGS="off"
 HOSTCTL_CURRENT_COMMAND=""
 HOSTCTL_CURRENT_ARGS=""
 HOST_PROJECTS_DIR_CACHE=""
 DOMAIN_ZONE_HELPER="$SCRIPT_DIR/domain-zone.sh"
+HOSTCTL_INFRA_FILE_LOGS_OVERRIDE=""
+HOSTCTL_PROJECT_FILE_LOGS_OVERRIDE=""
 
 if [ -f "$DOMAIN_ZONE_HELPER" ]; then
     # shellcheck source=/dev/null
@@ -62,11 +68,15 @@ usage() {
     cat <<'EOF'
 Usage:
   hostctl.sh create <host> [--php <version>] [--db <mysql|postgres>] [--preset <empty|bitrix>] [--bitrix-type <kernel|ext_kernel|link>] [--core <core_id>] [--core-id <core_id>] [--tz <timezone>] [--db-name <name>] [--db-user <user>] [--db-password <pass>] [--db-root-password <pass>] [--db-port <port>] [--hosts-mode <auto|skip>] [--interactive|--no-interactive] [--no-start]
-  hostctl.sh start <host>
+  hostctl.sh start <host> [--project-file-logs=<on|off>]
   hostctl.sh stop <host>
-  hostctl.sh infra-start
+  hostctl.sh infra-start [--infra-file-logs=<on|off>]
   hostctl.sh infra-stop
-  hostctl.sh infra-restart
+  hostctl.sh infra-restart [--infra-file-logs=<on|off>]
+  hostctl.sh set-infra-file-logs <on|off>
+  hostctl.sh set-project-file-logs <host> <on|off>
+  hostctl.sh clear-infra-logs
+  hostctl.sh clear-project-logs <host>
   hostctl.sh set-php <host> <version>
   hostctl.sh delete <host> [--yes]
   hostctl.sh status [--host <host>]
@@ -100,6 +110,10 @@ Examples:
   hostctl.sh infra-start
   hostctl.sh infra-stop
   hostctl.sh infra-restart
+  hostctl.sh set-infra-file-logs on
+  hostctl.sh set-project-file-logs my-project.<zone> off
+  hostctl.sh clear-infra-logs
+  hostctl.sh clear-project-logs my-project.<zone>
   hostctl.sh create sandbox --preset empty
   hostctl.sh set-php my-project 8.4
   hostctl.sh delete my-project.<zone> --yes
@@ -116,6 +130,89 @@ to_lower() {
 normalize_token() {
     local raw="$1"
     printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | sed -E "s/^[[:space:]\"']+//; s/[[:space:]\"']+$//"
+}
+
+normalize_toggle_value() {
+    local raw
+    raw="$(normalize_token "${1:-}")"
+    case "$raw" in
+        on|true|1|yes|enable|enabled)
+            echo "on"
+            return 0
+            ;;
+        off|false|0|no|disable|disabled|"")
+            echo "off"
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+logging_host_key() {
+    local host="$1"
+    printf "%s" "$host" | tr '[:lower:]' '[:upper:]' | sed -E 's/[^A-Z0-9]/_/g'
+}
+
+ensure_logging_config_file() {
+    ensure_registry
+    mkdir -p "$REGISTRY_DIR" >/dev/null 2>&1 || true
+    [ -f "$LOGGING_CONFIG_FILE" ] || touch "$LOGGING_CONFIG_FILE" >/dev/null 2>&1 || true
+}
+
+logging_config_get() {
+    local key="$1"
+    local default_value="${2:-}"
+    ensure_logging_config_file
+    local value=""
+    value="$(awk -F '=' -v k="$key" '$1==k {v=$2} END{print v}' "$LOGGING_CONFIG_FILE" 2>/dev/null || true)"
+    if [ -n "$value" ]; then
+        echo "$value"
+        return 0
+    fi
+    echo "$default_value"
+}
+
+logging_config_set() {
+    local key="$1"
+    local value="$2"
+    ensure_logging_config_file
+    awk -F '=' -v k="$key" -v v="$value" '
+        BEGIN { done=0 }
+        $1==k { print k "=" v; done=1; next }
+        { print }
+        END { if (!done) print k "=" v }
+    ' "$LOGGING_CONFIG_FILE" > "$LOGGING_CONFIG_FILE.tmp.$$" && mv "$LOGGING_CONFIG_FILE.tmp.$$" "$LOGGING_CONFIG_FILE"
+}
+
+resolve_infra_file_logs_mode() {
+    local value=""
+    if [ -n "${HOSTCTL_INFRA_FILE_LOGS_OVERRIDE:-}" ]; then
+        value="$HOSTCTL_INFRA_FILE_LOGS_OVERRIDE"
+    else
+        value="$(logging_config_get "INFRA_FILE_LOGS" "$DEFAULT_INFRA_FILE_LOGS")"
+    fi
+    normalize_toggle_value "$value" || echo "$DEFAULT_INFRA_FILE_LOGS"
+}
+
+resolve_project_file_logs_mode() {
+    local host="$1"
+    local host_key=""
+    local value=""
+    if [ -n "${HOSTCTL_PROJECT_FILE_LOGS_OVERRIDE:-}" ]; then
+        value="$HOSTCTL_PROJECT_FILE_LOGS_OVERRIDE"
+        normalize_toggle_value "$value" || echo "$DEFAULT_PROJECT_FILE_LOGS"
+        return 0
+    fi
+    host_key="$(logging_host_key "$host")"
+    value="$(logging_config_get "PROJECT_FILE_LOGS_${host_key}" "")"
+    if [ -n "$value" ]; then
+        normalize_toggle_value "$value" || echo "$DEFAULT_PROJECT_FILE_LOGS"
+        return 0
+    fi
+    value="$(logging_config_get "PROJECT_FILE_LOGS_DEFAULT" "$DEFAULT_PROJECT_FILE_LOGS")"
+    normalize_toggle_value "$value" || echo "$DEFAULT_PROJECT_FILE_LOGS"
 }
 
 is_valid_domain_suffix() {
@@ -532,6 +629,9 @@ cleanup_state_appledouble_files() {
 }
 
 ensure_log_file_ready() {
+    local infra_file_logs=""
+    infra_file_logs="$(resolve_infra_file_logs_mode)"
+    [ "$infra_file_logs" = "on" ] || return 0
     ensure_state_dir
     [ -f "$HOSTCTL_LOG_FILE" ] || touch "$HOSTCTL_LOG_FILE" >/dev/null 2>&1 || true
 }
@@ -543,14 +643,22 @@ log_event() {
     local timestamp
     timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-    ensure_log_file_ready
-    printf "%s\t%s\tpid=%s\tcommand=%s\targs=%s\tmessage=%s\n" \
+    local line=""
+    line="$(printf "%s\t%s\tpid=%s\tcommand=%s\targs=%s\tmessage=%s" \
         "$timestamp" \
         "$level" \
         "$$" \
         "${HOSTCTL_CURRENT_COMMAND:-unknown}" \
         "${HOSTCTL_CURRENT_ARGS:-}" \
-        "$message" >> "$HOSTCTL_LOG_FILE" 2>/dev/null || true
+        "$message")"
+
+    # stdout/stderr-first: без file-logging журнал уходит только в stderr.
+    printf "%s\n" "$line" >&2 || true
+
+    ensure_log_file_ready
+    if [ -f "$HOSTCTL_LOG_FILE" ] || [ "$(resolve_infra_file_logs_mode)" = "on" ]; then
+        printf "%s\n" "$line" >> "$HOSTCTL_LOG_FILE" 2>/dev/null || true
+    fi
 }
 
 handle_error_trap() {
@@ -1212,6 +1320,285 @@ if n:
 else:
     print(0)
 PY
+}
+
+patch_project_compose_logging_mode() {
+    local compose_file="$1"
+    local mode="$2"
+    [ -f "$compose_file" ] || { echo "0"; return 0; }
+    require_python3 optional "patch_project_compose_logging_mode" || { echo "0"; return 0; }
+    python3 - "$compose_file" "$mode" <<'PY'
+import pathlib
+import re
+import sys
+
+compose_path = pathlib.Path(sys.argv[1])
+mode = sys.argv[2].strip().lower()
+text = compose_path.read_text(encoding="utf-8", errors="ignore")
+updated = False
+
+if mode == "off":
+    new_text = re.sub(r'^\s*-\s*["\']?\./logs/php:/var/log/php["\']?\s*\n?', '', text, flags=re.M)
+    new_text = re.sub(r'^\s*-\s*["\']?\./logs/nginx:/var/log/nginx["\']?\s*\n?', '', new_text, flags=re.M)
+else:
+    if re.search(r'^\s*-\s*["\']?\./logs/php:/var/log/php["\']?\s*$', text, flags=re.M) is None:
+        new_text = re.sub(
+            r'(^\s*-\s*["\']?\./www:/opt/www["\']?\s*$)',
+            r'\1\n      - ./logs/php:/var/log/php',
+            text,
+            count=1,
+            flags=re.M
+        )
+        text = new_text
+    new_text = text
+    if re.search(r'^\s*-\s*["\']?\./logs/nginx:/var/log/nginx["\']?\s*$', new_text, flags=re.M) is None:
+        new_text = re.sub(
+            r'(^\s*-\s*["\']?\./nginx/site\.conf:/etc/nginx/conf\.d/default\.conf:ro["\']?\s*$)',
+            r'\1\n      - ./logs/nginx:/var/log/nginx',
+            new_text,
+            count=1,
+            flags=re.M
+        )
+
+if new_text != text:
+    updated = True
+    compose_path.write_text(new_text, encoding="utf-8")
+
+print(1 if updated else 0)
+PY
+}
+
+ensure_project_label_in_compose() {
+    local compose_file="$1"
+    local host="$2"
+    [ -f "$compose_file" ] || { echo "0"; return 0; }
+    require_python3 optional "ensure_project_label_in_compose" || { echo "0"; return 0; }
+    python3 - "$compose_file" "$host" <<'PY'
+import pathlib
+import re
+import sys
+
+compose_path = pathlib.Path(sys.argv[1])
+host = sys.argv[2].strip()
+text = compose_path.read_text(encoding="utf-8", errors="ignore")
+lines = text.splitlines()
+
+if not host:
+    print(0)
+    raise SystemExit(0)
+
+updated = False
+services_start = None
+for i, line in enumerate(lines):
+    if re.match(r'^\s*services:\s*$', line):
+        services_start = i
+        break
+
+if services_start is None:
+    print(0)
+    raise SystemExit(0)
+
+service_idxs = []
+for i in range(services_start + 1, len(lines)):
+    if re.match(r'^[^\s#][^:]*:\s*$', lines[i]):
+        break
+    if re.match(r'^  [A-Za-z0-9][A-Za-z0-9_.-]*:\s*$', lines[i]):
+        service_idxs.append(i)
+
+if not service_idxs:
+    print(0)
+    raise SystemExit(0)
+
+shift = 0
+for idx_pos, start in enumerate(service_idxs):
+    start += shift
+    end = len(lines)
+    if idx_pos + 1 < len(service_idxs):
+        end = service_idxs[idx_pos + 1] + shift
+
+    block = lines[start:end]
+    if any('pillat.project=' in l for l in block):
+        continue
+
+    labels_idx = None
+    for j, l in enumerate(block):
+        if re.match(r'^\s{4}labels:\s*$', l):
+            labels_idx = j
+            break
+
+    if labels_idx is not None:
+        insert_at = start + labels_idx + 1
+        lines.insert(insert_at, f'      - "pillat.project={host}"')
+        shift += 1
+        updated = True
+    else:
+        # Добавляем labels в конец блока сервиса с корректным отступом.
+        insert_at = end
+        lines.insert(insert_at, '    labels:')
+        lines.insert(insert_at + 1, f'      - "pillat.project={host}"')
+        shift += 2
+        updated = True
+
+if updated:
+    compose_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+print(1 if updated else 0)
+PY
+}
+
+patch_project_ini_logging_mode() {
+    local project_dir="$1"
+    local mode="$2"
+    local php_ini="$project_dir/php.ini"
+    local xdebug_ini="$project_dir/xdebug.ini"
+    local fpm_conf="$project_dir/php-fpm-error-log.conf"
+    local target_php="/proc/self/fd/2"
+    local target_nginx_stdout="/dev/stdout"
+    local target_nginx_stderr="/dev/stderr"
+    if [ "$mode" = "on" ]; then
+        target_php="/var/log/php/error.log"
+    fi
+    if [ -f "$php_ini" ]; then
+        sed -i.bak -E "s#^[[:space:]]*error_log[[:space:]]*=.*#error_log = ${target_php}#g" "$php_ini" 2>/dev/null || true
+        rm -f "$php_ini.bak" 2>/dev/null || true
+    fi
+    if [ -f "$xdebug_ini" ]; then
+        if [ "$mode" = "on" ]; then
+            sed -i.bak -E "s#^[[:space:]]*xdebug\\.log[[:space:]]*=.*#xdebug.log=/var/log/php/xdebug.log#g" "$xdebug_ini" 2>/dev/null || true
+        else
+            sed -i.bak -E "s#^[[:space:]]*xdebug\\.log[[:space:]]*=.*#xdebug.log=/dev/stderr#g" "$xdebug_ini" 2>/dev/null || true
+        fi
+        rm -f "$xdebug_ini.bak" 2>/dev/null || true
+    fi
+    if [ -f "$fpm_conf" ]; then
+        if [ "$mode" = "on" ]; then
+            sed -i.bak -E "s#php_admin_value\\[error_log\\][[:space:]]*=.*#php_admin_value[error_log] = /var/log/php/error.log#g" "$fpm_conf" 2>/dev/null || true
+        else
+            sed -i.bak -E "s#php_admin_value\\[error_log\\][[:space:]]*=.*#php_admin_value[error_log] = /proc/self/fd/2#g" "$fpm_conf" 2>/dev/null || true
+        fi
+        rm -f "$fpm_conf.bak" 2>/dev/null || true
+    fi
+    local nginx_conf="$project_dir/nginx/site.conf"
+    if [ -f "$nginx_conf" ]; then
+        if [ "$mode" = "on" ]; then
+            sed -i.bak -E "s#^[[:space:]]*access_log[[:space:]]+.*#    access_log /var/log/nginx/access.log;#g" "$nginx_conf" 2>/dev/null || true
+            sed -i.bak -E "s#^[[:space:]]*error_log[[:space:]]+.*#    error_log /var/log/nginx/error.log;#g" "$nginx_conf" 2>/dev/null || true
+        else
+            sed -i.bak -E "s#^[[:space:]]*access_log[[:space:]]+.*#    access_log ${target_nginx_stdout};#g" "$nginx_conf" 2>/dev/null || true
+            sed -i.bak -E "s#^[[:space:]]*error_log[[:space:]]+.*#    error_log ${target_nginx_stderr};#g" "$nginx_conf" 2>/dev/null || true
+        fi
+        rm -f "$nginx_conf.bak" 2>/dev/null || true
+    fi
+}
+
+ensure_project_log_dirs_for_file_mode() {
+    local project_dir="$1"
+    mkdir -p "$project_dir/logs/php" "$project_dir/logs/nginx"
+    touch "$project_dir/logs/php/error.log" "$project_dir/logs/php/xdebug.log" "$project_dir/logs/nginx/access.log" "$project_dir/logs/nginx/error.log"
+    chmod 666 "$project_dir/logs/php/error.log" "$project_dir/logs/php/xdebug.log" "$project_dir/logs/nginx/access.log" "$project_dir/logs/nginx/error.log" 2>/dev/null || true
+}
+
+clear_project_file_logs() {
+    local project_dir="$1"
+    local file
+    for file in "$project_dir"/logs/php/*.log "$project_dir"/logs/nginx/*.log; do
+        [ -f "$file" ] || continue
+        : > "$file" 2>/dev/null || true
+    done
+}
+
+resolve_loki_api_url() {
+    local candidate="${HOSTCTL_LOKI_URL:-$LOKI_DEFAULT_URL}"
+    if command -v curl >/dev/null 2>&1; then
+        if curl -fsS --max-time 2 "${candidate}/ready" >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+        local loki_ip=""
+        loki_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' loki 2>/dev/null || true)"
+        if [ -n "$loki_ip" ] && curl -fsS --max-time 2 "http://${loki_ip}:3100/ready" >/dev/null 2>&1; then
+            echo "http://${loki_ip}:3100"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+clear_loki_query_logs() {
+    local query="$1"
+    local loki_url=""
+    local now_utc=""
+    if ! command -v curl >/dev/null 2>&1; then
+        log_event "WARN" "loki_delete_skip reason=curl_missing query=${query}"
+        return 0
+    fi
+    loki_url="$(resolve_loki_api_url || true)"
+    now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    if [ -n "$loki_url" ]; then
+        if curl -fsS -g -X POST --get "${loki_url}/loki/api/v1/delete" \
+            --data-urlencode "query=${query}" \
+            --data-urlencode "start=1970-01-01T00:00:00Z" \
+            --data-urlencode "end=${now_utc}" >/dev/null 2>&1; then
+            log_event "INFO" "loki_delete_ok query=${query} via=direct"
+            return 0
+        fi
+    fi
+    if docker exec -e LOKI_QUERY="$query" -e LOKI_END="$now_utc" devpanel sh -lc \
+        'curl -fsS -g -X POST --get "http://loki:3100/loki/api/v1/delete" --data-urlencode "query=$LOKI_QUERY" --data-urlencode "start=1970-01-01T00:00:00Z" --data-urlencode "end=$LOKI_END" >/dev/null' \
+        >/dev/null 2>&1; then
+        log_event "INFO" "loki_delete_ok query=${query} via=devpanel_exec"
+    else
+        log_event "WARN" "loki_delete_failed query=${query}"
+    fi
+}
+
+clear_project_runtime_logs() {
+    local host="$1"
+    local project_dir="$2"
+    clear_project_file_logs "$project_dir"
+    truncate_if_oversize "$project_dir/logs/php/error.log" 10485760
+    truncate_if_oversize "$project_dir/logs/php/xdebug.log" 10485760
+    truncate_if_oversize "$project_dir/logs/nginx/access.log" 10485760
+    truncate_if_oversize "$project_dir/logs/nginx/error.log" 10485760
+    clear_loki_query_logs "{project=\"${host}\"}"
+}
+
+clear_infra_runtime_logs() {
+    mkdir -p "$LOGS_DIR/.devpanel-jobs" >/dev/null 2>&1 || true
+    rm -f "$LOGS_DIR/.devpanel-jobs"/*.log "$LOGS_DIR/.devpanel-jobs"/*.exit "$LOGS_DIR/.devpanel-jobs"/*.json "$LOGS_DIR/.devpanel-jobs"/*.sh >/dev/null 2>&1 || true
+    rm -f "$LOGS_DIR"/log-review-report-*.md >/dev/null 2>&1 || true
+    if [ -f "$LOGS_DIR/devpanel-actions.log" ]; then : > "$LOGS_DIR/devpanel-actions.log"; fi
+    if [ -f "$HOSTCTL_LOG_FILE" ]; then : > "$HOSTCTL_LOG_FILE"; fi
+    truncate_if_oversize "$LOGS_DIR/devpanel-actions.log" 20971520
+    truncate_if_oversize "$HOSTCTL_LOG_FILE" 20971520
+    clear_loki_query_logs "{project=\"infra\"}"
+}
+
+wait_loki_ready() {
+    local attempts="${1:-20}"
+    local i=0
+    while [ "$i" -lt "$attempts" ]; do
+        if resolve_loki_api_url >/dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+truncate_if_oversize() {
+    local file="$1"
+    local max_bytes="$2"
+    [ -f "$file" ] || return 0
+    local size=0
+    size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+    case "$size" in
+        ''|*[!0-9]*) size=0 ;;
+    esac
+    if [ "$size" -gt "$max_bytes" ]; then
+        : > "$file" 2>/dev/null || true
+    fi
 }
 
 # Добавляет volume mounts core в link-хост (подход Bitrix Docker: core в /var/core-<id>/, симлинки в контейнере).
@@ -2639,7 +3026,7 @@ runtime_host_compose() {
                 # --project-directory с host-путём нужен daemon для volumes/build; .env читает CLI по --env-file.
                 # DOCKER_BUILDKIT=0 и COMPOSE_DOCKER_CLI_BUILD=0 — обход требования buildx в контейнере devpanel
                 COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose \
-                    "${compose_progress[@]}" \
+                    ${compose_progress[@]+"${compose_progress[@]}"} \
                     -f "$tmp_compose" \
                     --project-directory "$host_project_dir" \
                     --env-file "$project_dir/.env" \
@@ -2651,7 +3038,7 @@ runtime_host_compose() {
         fi
     fi
 
-    (cd "$project_dir" && COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose "${compose_progress[@]}" "$@")
+    (cd "$project_dir" && COPYFILE_DISABLE=1 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose ${compose_progress[@]+"${compose_progress[@]}"} "$@")
 }
 
 runtime_host_up() {
@@ -3887,11 +4274,31 @@ start_host() {
 
     log_event "INFO" "start_host_begin host=$host input=$host_input domain_suffix=$domain_suffix"
 
-    if [ "$#" -gt 0 ]; then
-        echo "Unknown option(s) for start: $*"
-        print_help_hint
-        usage
-        exit 1
+    local project_file_logs_override=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --project-file-logs=*)
+                project_file_logs_override="${1#*=}"
+                shift
+                ;;
+            *)
+                echo "Unknown option(s) for start: $*"
+                print_help_hint
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ -n "$project_file_logs_override" ]; then
+        if ! project_file_logs_override="$(normalize_toggle_value "$project_file_logs_override")"; then
+            echo "Error: invalid value for --project-file-logs. Use on|off."
+            exit 1
+        fi
+        HOSTCTL_PROJECT_FILE_LOGS_OVERRIDE="$project_file_logs_override"
+        local host_key=""
+        host_key="$(logging_host_key "$host")"
+        logging_config_set "PROJECT_FILE_LOGS_${host_key}" "$project_file_logs_override"
     fi
 
     ensure_registry
@@ -3900,6 +4307,8 @@ start_host() {
     project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
     local project_dir="$PROJECTS_DIR/$project_dir_name"
     local compose_file="$project_dir/docker-compose.yml"
+    local project_file_logs_mode=""
+    project_file_logs_mode="$(resolve_project_file_logs_mode "$host")"
     if [ ! -d "$project_dir" ] && ! registry_has_host "$host"; then
         echo "Error: host '$host' not found."
         print_status_hint
@@ -3911,6 +4320,8 @@ start_host() {
         echo "Hint: recreate host with './hostctl.sh create $host --preset empty' or restore docker-compose.yml."
         exit 1
     fi
+
+    ensure_project_label_in_compose "$compose_file" "$host" >/dev/null || true
 
     # Docker Compose требует .env в каталоге проекта; при отсутствии создаём из .env.example
     local env_file="$project_dir/.env"
@@ -3925,6 +4336,13 @@ start_host() {
         fi
     fi
 
+    patch_project_compose_logging_mode "$compose_file" "$project_file_logs_mode" >/dev/null || true
+    patch_project_ini_logging_mode "$project_dir" "$project_file_logs_mode"
+    if [ "$project_file_logs_mode" = "on" ]; then
+        ensure_project_log_dirs_for_file_mode "$project_dir"
+    fi
+    clear_project_runtime_logs "$host" "$project_dir"
+
     ensure_php_ini_mount_in_compose "$compose_file" "$project_dir" || true
     ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
     ensure_project_xdebug_port "$project_dir" || true
@@ -3936,13 +4354,15 @@ start_host() {
         need_rebuild_mysqli="1"
     fi
 
-    # Чтобы PHP мог писать в error.log: файл и каталог должны существовать и быть доступны для записи из контейнера (www-data).
-    mkdir -p "$project_dir/logs/php"
-    touch "$project_dir/logs/php/error.log"
-    chmod 666 "$project_dir/logs/php/error.log" 2>/dev/null || true
-    chmod 777 "$project_dir/logs/php" 2>/dev/null || true
+    # Режим file-logging создаёт каталоги логов; в stdout/stderr режиме не трогаем файловую структуру.
+    if [ "$project_file_logs_mode" = "on" ]; then
+        mkdir -p "$project_dir/logs/php"
+        touch "$project_dir/logs/php/error.log"
+        chmod 666 "$project_dir/logs/php/error.log" 2>/dev/null || true
+        chmod 777 "$project_dir/logs/php" 2>/dev/null || true
+    fi
 
-    # Для старых проектов: создать php-fpm-error-log.conf, чтобы FPM писал ошибки в файл (пул переопределяет php.ini).
+    # Для старых проектов: создать php-fpm-error-log.conf (лог-таргет зависит от режима).
     local fpm_conf="$project_dir/php-fpm-error-log.conf"
     if [ -d "$fpm_conf" ]; then
         rm -rf "$fpm_conf"
@@ -3950,11 +4370,12 @@ start_host() {
     if [ ! -f "$fpm_conf" ]; then
         cat > "$fpm_conf" <<'FPMEOF'
 [www]
-php_admin_value[error_log] = /var/log/php/error.log
+php_admin_value[error_log] = /proc/self/fd/2
 php_admin_flag[log_errors] = on
 FPMEOF
         ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
     fi
+    patch_project_ini_logging_mode "$project_dir" "$project_file_logs_mode"
 
     # Link-хост: добавить volume mounts core (bitrix/upload/images) для restore.php и т.п.
     local link_core_id=""
@@ -4274,12 +4695,32 @@ DOCKERIGNORE
 
 infra_start() {
     log_event "INFO" "infra_start_begin"
-    if [ "$#" -gt 0 ]; then
-        echo "Unknown option(s) for infra-start: $*"
-        print_help_hint
-        usage
-        exit 1
+    local infra_file_logs_override=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --infra-file-logs=*)
+                infra_file_logs_override="${1#*=}"
+                shift
+                ;;
+            *)
+                echo "Unknown option(s) for infra-start: $*"
+                print_help_hint
+                usage
+                exit 1
+                ;;
+        esac
+    done
+    if [ -n "$infra_file_logs_override" ]; then
+        if ! infra_file_logs_override="$(normalize_toggle_value "$infra_file_logs_override")"; then
+            echo "Error: invalid value for --infra-file-logs. Use on|off."
+            exit 1
+        fi
+        HOSTCTL_INFRA_FILE_LOGS_OVERRIDE="$infra_file_logs_override"
+        logging_config_set "INFRA_FILE_LOGS" "$infra_file_logs_override"
     fi
+    local infra_file_logs_mode=""
+    infra_file_logs_mode="$(resolve_infra_file_logs_mode)"
+    export DEVPANEL_INFRA_FILE_LOGS="$infra_file_logs_mode"
 
     if ! ensure_infra_network; then
         echo "Error: failed to prepare infra docker network."
@@ -4294,6 +4735,9 @@ infra_start() {
 
     ensure_infra_env_file_notice
 
+    # Очистка инфраструктурных логов перед каждым запуском.
+    clear_infra_runtime_logs
+
     if ! runtime_infra_up; then
         echo "Error: не удалось запустить инфраструктурные контейнеры."
         echo "Проверьте состояние Docker/сети и повторите попытку:"
@@ -4301,6 +4745,8 @@ infra_start() {
         echo "Hint: если загрузка образов медленная, повторите команду после стабилизации сети."
         exit 1
     fi
+    wait_loki_ready 30 || true
+    clear_loki_query_logs "{project=\"infra\"}"
     log_event "INFO" "infra_start_complete"
 }
 
@@ -4327,12 +4773,32 @@ infra_stop() {
 
 infra_restart() {
     log_event "INFO" "infra_restart_begin"
-    if [ "$#" -gt 0 ]; then
-        echo "Unknown option(s) for infra-restart: $*"
-        print_help_hint
-        usage
-        exit 1
+    local infra_file_logs_override=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --infra-file-logs=*)
+                infra_file_logs_override="${1#*=}"
+                shift
+                ;;
+            *)
+                echo "Unknown option(s) for infra-restart: $*"
+                print_help_hint
+                usage
+                exit 1
+                ;;
+        esac
+    done
+    if [ -n "$infra_file_logs_override" ]; then
+        if ! infra_file_logs_override="$(normalize_toggle_value "$infra_file_logs_override")"; then
+            echo "Error: invalid value for --infra-file-logs. Use on|off."
+            exit 1
+        fi
+        HOSTCTL_INFRA_FILE_LOGS_OVERRIDE="$infra_file_logs_override"
+        logging_config_set "INFRA_FILE_LOGS" "$infra_file_logs_override"
     fi
+    local infra_file_logs_mode=""
+    infra_file_logs_mode="$(resolve_infra_file_logs_mode)"
+    export DEVPANEL_INFRA_FILE_LOGS="$infra_file_logs_mode"
 
     if ! ensure_infra_network; then
         echo "Error: failed to prepare infra docker network."
@@ -4361,8 +4827,64 @@ infra_restart() {
         exit 1
     fi
 
+    wait_loki_ready 30 || true
+    clear_infra_runtime_logs
+
     echo "✅ Инфраструктура успешно перезапущена."
     log_event "INFO" "infra_restart_complete"
+}
+
+set_infra_file_logs_setting() {
+    local value="$1"
+    if ! value="$(normalize_toggle_value "$value")"; then
+        echo "Error: invalid value '$1'. Use on|off."
+        exit 1
+    fi
+    logging_config_set "INFRA_FILE_LOGS" "$value"
+    echo "✅ Infra file logs: $value"
+}
+
+set_project_file_logs_setting() {
+    local host_input="$1"
+    local value="$2"
+    local domain_suffix=""
+    local host=""
+    if ! value="$(normalize_toggle_value "$value")"; then
+        echo "Error: invalid value '$2'. Use on|off."
+        exit 1
+    fi
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+    local host_key=""
+    host_key="$(logging_host_key "$host")"
+    logging_config_set "PROJECT_FILE_LOGS_${host_key}" "$value"
+    echo "✅ Project file logs for '$host': $value"
+}
+
+clear_project_logs_command() {
+    local host_input="$1"
+    local domain_suffix=""
+    local host=""
+    if ! domain_suffix="$(resolve_domain_suffix)"; then
+        exit 1
+    fi
+    if ! host="$(canonicalize_host_name "$host_input" "$domain_suffix" "existing")"; then
+        exit 1
+    fi
+    local project_dir_name=""
+    project_dir_name="$(resolve_host_to_project_dir "$host" "$domain_suffix")"
+    local project_dir="$PROJECTS_DIR/$project_dir_name"
+    clear_project_runtime_logs "$host" "$project_dir"
+    echo "✅ Логи проекта '$host' очищены (Loki и файлы)."
+}
+
+clear_infra_logs_command() {
+    clear_infra_runtime_logs
+    echo "✅ Логи инфраструктуры очищены (Loki и файлы)."
 }
 
 _parse_dev_tools_flags() {
@@ -5055,6 +5577,21 @@ main() {
             ;;
         infra-restart)
             infra_restart "$@"
+            ;;
+        set-infra-file-logs)
+            [ "$#" -ge 1 ] || { echo "Usage: hostctl.sh set-infra-file-logs <on|off>"; exit 1; }
+            set_infra_file_logs_setting "$1"
+            ;;
+        set-project-file-logs)
+            [ "$#" -ge 2 ] || { echo "Usage: hostctl.sh set-project-file-logs <host> <on|off>"; exit 1; }
+            set_project_file_logs_setting "$1" "$2"
+            ;;
+        clear-infra-logs)
+            clear_infra_logs_command
+            ;;
+        clear-project-logs)
+            [ "$#" -ge 1 ] || { echo "Usage: hostctl.sh clear-project-logs <host>"; exit 1; }
+            clear_project_logs_command "$1"
             ;;
         set-php)
             [ "$#" -ge 2 ] || { echo "Usage: hostctl.sh set-php <host> <version>"; usage; exit 1; }

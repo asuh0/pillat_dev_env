@@ -184,23 +184,17 @@ bash ./hostctl.sh logs --tail 200
 
 ## Политика состояния и логов
 
-### Логи проектов (относительные пути)
+### Логи проектов
 
-Логи каждого хоста хранятся **внутри папки проекта** — относительные пути, без дублирования структуры:
+По умолчанию проектные логи идут в `stdout/stderr` контейнеров (`php`, `nginx`) и попадают в Loki/Grafana через `promtail` + `docker_sd`.
 
-```
-projects/<host>/
-├── www/
-├── logs/
-│   ├── php/      # PHP, Xdebug
-│   └── nginx/   # access.log, error.log
-├── nginx/
-└── docker-compose.yml
-```
-
-- Пути в compose: `./logs/php`, `./logs/nginx` — относительны проекту.
-- Promtail собирает логи из `projects/*/logs/php/*.log` и `projects/*/logs/nginx/*.log`.
-- Логи инфраструктуры (Traefik): `logs/traefik/` в корне workspace.
+- Включение file-logging для проекта:
+  - через CLI: `bash ./hostctl.sh set-project-file-logs <host> on`
+  - временно при старте: `bash ./hostctl.sh start <host> --project-file-logs=on`
+- Выключение file-logging (обратно в stdout/stderr):
+  - `bash ./hostctl.sh set-project-file-logs <host> off`
+- При file-режиме используются `projects/<host>/logs/php/*.log` и `projects/<host>/logs/nginx/*.log`.
+- При старте/рестарте хоста file-логи проекта очищаются.
 
 ### Служебные артефакты
 
@@ -210,12 +204,42 @@ projects/<host>/
 - `bitrix-bindings.tsv`
 - `traefik-domains.txt`, `traefik-domains.sha256` — список доменов для TLS (из хостов)
 
-**Логи** — `logs/` (корень):
-- `hostctl.log`
-- `devpanel-actions.log`
-- `devpanel-jobs/`
+**Логи и артефакты инфраструктуры** — `logs/` (корень):
+- `hostctl.log` (если включен infra file-logging)
+- `devpanel-actions.log` (если включен infra file-logging)
+- `.devpanel-jobs/` (или `/tmp/devpanel-jobs` при stdout-only режиме)
 - `log-review-report-*.md`
-- `traefik/` — логи Traefik
+
+По умолчанию инфраструктурные логи идут в `stdout/stderr`.
+
+- Включение file-logging infra:
+  - `bash ./hostctl.sh set-infra-file-logs on`
+  - или `bash ./hostctl.sh infra-start --infra-file-logs=on`
+- Выключение file-logging infra:
+  - `bash ./hostctl.sh set-infra-file-logs off`
+  - или `bash ./hostctl.sh infra-start --infra-file-logs=off`
+
+При `infra-start` выполняется очистка служебных логов/артефактов (`.devpanel-jobs`, `devpanel-actions.log`, `hostctl.log`, `log-review-report-*`).
+
+### Единые лейблы в Loki
+
+Для docker- и file-потоков в индекс попадает только этот набор (дополнительные служебные метки вроде `filename` отбрасываются на стороне Promtail):
+
+- `project` — домен хоста (например `<link_host>`) или `infra`; для docker без `pillat.project` — `infra`
+- `service` — сервис Compose (`php`, `nginx`, …) или `unknown`, если метка не задана
+- `stream` — `stdout|stderr` (у file scrape — `stdout`)
+- `level` — `error|warn|info|debug|notice` (по умолчанию `info`)
+- `source` — `docker` или `file`
+- `container` — имя контейнера (для file scrape — `unknown`)
+- `job` — имя scrape job в `promtail-config.yml` (`docker`, `php`, `nginx`, `traefik`, `mysql`, `postgres`, …)
+
+Старые временные ряды с прежними лейблами (`project_slug`, `compose_project_raw`, …) могут ещё отображаться в Grafana до срока хранения/удаления в Loki.
+
+Рекомендуемые фильтры:
+
+- проект целиком: `{project="famil.pillat"}`
+- только nginx проекта: `{project="famil.pillat", service="nginx"}`
+- ошибки инфраструктуры: `{project="infra", level="error"}`
 
 **Инфра-конфиг** — `infra/config/`:
 - `infra-runtime-mode` — primary/fallback (какой compose используется)

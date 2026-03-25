@@ -26,7 +26,58 @@ if (!is_dir($projectsDir)) {
 // Реестры проектов: projects/.registry/
 $registryDir = $projectsDir ? rtrim($projectsDir, '/') . '/.registry' : '';
 
+function devpanelReadLoggingMode($registryDir) {
+    $defaults = [
+        'infra_file_logs' => 'off',
+        'project_file_logs_default' => 'off',
+        'project_overrides' => [],
+    ];
+    if (!is_string($registryDir) || $registryDir === '') {
+        return $defaults;
+    }
+    $configFile = rtrim($registryDir, '/') . '/logging-config.env';
+    if (!is_file($configFile)) {
+        return $defaults;
+    }
+    $lines = @file($configFile, FILE_IGNORE_NEW_LINES);
+    if (!is_array($lines)) {
+        return $defaults;
+    }
+    foreach ($lines as $line) {
+        $line = trim((string)$line);
+        if ($line === '' || $line[0] === '#') continue;
+        $parts = explode('=', $line, 2);
+        $key = trim((string)($parts[0] ?? ''));
+        $value = strtolower(trim((string)($parts[1] ?? '')));
+        if ($key === 'INFRA_FILE_LOGS') {
+            $defaults['infra_file_logs'] = $value === 'on' ? 'on' : 'off';
+            continue;
+        }
+        if ($key === 'PROJECT_FILE_LOGS_DEFAULT') {
+            $defaults['project_file_logs_default'] = $value === 'on' ? 'on' : 'off';
+            continue;
+        }
+        if (strpos($key, 'PROJECT_FILE_LOGS_') === 0) {
+            $hostKey = substr($key, strlen('PROJECT_FILE_LOGS_'));
+            if ($hostKey !== '') {
+                $defaults['project_overrides'][$hostKey] = $value === 'on' ? 'on' : 'off';
+            }
+        }
+    }
+    return $defaults;
+}
+
+function devpanelProjectFileLogsMode(array $loggingMode, $projectName) {
+    $hostKey = strtoupper(preg_replace('/[^A-Za-z0-9]/', '_', (string)$projectName));
+    if ($hostKey !== '' && isset($loggingMode['project_overrides'][$hostKey])) {
+        return $loggingMode['project_overrides'][$hostKey] === 'on' ? 'on' : 'off';
+    }
+    return (($loggingMode['project_file_logs_default'] ?? 'off') === 'on') ? 'on' : 'off';
+}
+
 // Логи: logs/ (корень workspace, или /logs в контейнере)
+$loggingMode = devpanelReadLoggingMode($registryDir);
+$infraFileLogsEnabled = (($loggingMode['infra_file_logs'] ?? 'off') === 'on');
 $logsDir = '/logs';
 if (!is_dir($logsDir)) {
     $fallbackLogsDir = realpath(__DIR__ . '/../../../logs');
@@ -39,7 +90,12 @@ if (!is_dir($logsDir)) {
 if ($logsDir !== '' && !is_dir($logsDir)) {
     @mkdir($logsDir, 0775, true);
 }
-$jobsDirBase = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+$jobsDirBase = '';
+if ($infraFileLogsEnabled) {
+    $jobsDirBase = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+} else {
+    $jobsDirBase = '/tmp/devpanel-jobs';
+}
 if ($jobsDirBase !== '' && !is_dir($jobsDirBase)) {
     @mkdir($jobsDirBase, 0777, true);
 }
@@ -411,12 +467,7 @@ function parseBitrixBindingsRegistry($registryDir, $legacyStateDir, $projectsDir
     return [$byHost, $linksByCore];
 }
 
-function logDevpanelAction($logsDir, $action, $status, $context = []) {
-    if (!ensureStateDir($logsDir)) {
-        return;
-    }
-
-    $logFile = rtrim($logsDir, '/') . '/devpanel-actions.log';
+function logDevpanelAction($logsDir, $action, $status, $context = [], $writeToFile = null) {
     $timestamp = gmdate('Y-m-d\TH:i:s\Z');
     $record = [
         'ts' => $timestamp,
@@ -424,12 +475,20 @@ function logDevpanelAction($logsDir, $action, $status, $context = []) {
         'status' => $status,
         'context' => $context,
     ];
+    $encoded = json_encode($record, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    @error_log('DEVPANEL_ACTION ' . $encoded);
 
-    @file_put_contents(
-        $logFile,
-        json_encode($record, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL,
-        FILE_APPEND
-    );
+    if ($writeToFile === null) {
+        $writeToFile = !empty($GLOBALS['infraFileLogsEnabled']);
+    }
+    if (!$writeToFile) {
+        return;
+    }
+    if (!ensureStateDir($logsDir)) {
+        return;
+    }
+    $logFile = rtrim($logsDir, '/') . '/devpanel-actions.log';
+    @file_put_contents($logFile, $encoded . PHP_EOL, FILE_APPEND);
 }
 
 function detectCreateErrorKind($outputText) {
@@ -989,7 +1048,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     // Для AJAX: запускаем создание в фоне, чтобы не рвать долгий HTTP-запрос
                     if ($isAjax) {
-                        $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+                        $jobsDir = $jobsDirBase;
                         if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                             $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                             if (!headers_sent()) {
@@ -1265,7 +1324,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 exit;
             }
 
-            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+            $jobsDir = $jobsDirBase;
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1476,16 +1535,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
             }
 
+            $projectFileLogsMode = devpanelProjectFileLogsMode($loggingMode, $projectName);
+            $projectLogFlag = ' --project-file-logs=' . escapeshellarg($projectFileLogsMode);
+
             if ($action === 'restart') {
                 $cmd = '(bash ' . escapeshellarg($hostctlScript) . ' stop ' . escapeshellarg($projectName)
-                    . ' && bash ' . escapeshellarg($hostctlScript) . ' start ' . escapeshellarg($projectName) . ') 2>&1';
+                    . ' && bash ' . escapeshellarg($hostctlScript) . ' start ' . escapeshellarg($projectName) . $projectLogFlag . ') 2>&1';
             } else {
-                $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' ' . escapeshellarg($action) . ' ' . escapeshellarg($projectName) . ' 2>&1';
+                $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' ' . escapeshellarg($action) . ' ' . escapeshellarg($projectName)
+                    . ($action === 'start' ? $projectLogFlag : '') . ' 2>&1';
             }
 
             // По аналогии с set-php: при AJAX запускаем start/restart в фоне и отдаём job_id для опроса лога
             if (($action === 'start' || $action === 'restart') && $isAjax) {
-                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+                $jobsDir = $jobsDirBase;
                 if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                     $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                     if (!headers_sent()) {
@@ -1603,7 +1666,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 exit;
             }
-            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+            $jobsDir = $jobsDirBase;
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1722,7 +1785,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' set-php ' . escapeshellarg($projectName) . ' ' . escapeshellarg($phpVersion) . ' 2>&1';
 
             if ($isAjax) {
-                $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+                $jobsDir = $jobsDirBase;
                 if ($jobsDir === '' || (!is_dir($jobsDir) && !@mkdir($jobsDir, 0775, true) && !is_dir($jobsDir))) {
                     $actionResult = ['type' => 'error', 'message' => 'Не удалось создать каталог фоновых задач DevPanel.'];
                     if (!headers_sent()) {
@@ -1836,7 +1899,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 exit;
             }
-            $jobsDir = $logsDir !== '' ? rtrim((string)$logsDir, '/') . '/.devpanel-jobs' : '';
+            $jobsDir = $jobsDirBase;
             if ($jobsDir === '' || !is_dir($jobsDir)) {
                 if (!headers_sent()) {
                     header('Content-Type: application/json; charset=utf-8');
@@ -1938,6 +2001,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'exit_code' => $exitCode ?? null,
             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
             exit;
+
+        case 'set-infra-file-logs':
+            $mode = strtolower(trim((string)($_POST['mode'] ?? 'off')));
+            if (!in_array($mode, ['on', 'off'], true)) {
+                $actionResult = ['type' => 'error', 'message' => 'Допустимые значения: on/off'];
+                break;
+            }
+            if (!file_exists($hostctlScript)) {
+                $actionResult = ['type' => 'error', 'message' => 'CLI hostctl не найден в контейнере devpanel (/scripts/hostctl.sh)'];
+                break;
+            }
+            $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' set-infra-file-logs ' . escapeshellarg($mode) . ' 2>&1';
+            $output = [];
+            exec($cmd, $output, $return);
+            if ($return === 0) {
+                $actionResult = ['type' => 'success', 'message' => 'Настройка логов инфраструктуры обновлена: ' . $mode];
+                header('Location: ' . $_SERVER['PHP_SELF'] . '?page=infra');
+                exit;
+            }
+            $actionResult = ['type' => 'error', 'message' => 'Ошибка сохранения: ' . implode("\n", array_slice($output, 0, 10))];
+            break;
+
+        case 'set-project-file-logs':
+            $projectName = trim((string)($_POST['project_name'] ?? ''));
+            $mode = strtolower(trim((string)($_POST['mode'] ?? 'off')));
+            if ($projectName === '' || !preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
+                $actionResult = ['type' => 'error', 'message' => 'Некорректное имя проекта.'];
+                break;
+            }
+            if (!in_array($mode, ['on', 'off'], true)) {
+                $actionResult = ['type' => 'error', 'message' => 'Допустимые значения: on/off'];
+                break;
+            }
+            if (!file_exists($hostctlScript)) {
+                $actionResult = ['type' => 'error', 'message' => 'CLI hostctl не найден в контейнере devpanel (/scripts/hostctl.sh)'];
+                break;
+            }
+            $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' set-project-file-logs '
+                . escapeshellarg($projectName) . ' ' . escapeshellarg($mode) . ' 2>&1';
+            $output = [];
+            exec($cmd, $output, $return);
+            if ($return === 0) {
+                $actionResult = ['type' => 'success', 'message' => "Логи проекта {$projectName}: {$mode}"];
+                header('Location: ' . $_SERVER['PHP_SELF']);
+                exit;
+            }
+            $actionResult = ['type' => 'error', 'message' => 'Ошибка сохранения: ' . implode("\n", array_slice($output, 0, 10))];
+            break;
+
+        case 'clear-infra-logs':
+            if (!file_exists($hostctlScript)) {
+                $actionResult = ['type' => 'error', 'message' => 'CLI hostctl не найден в контейнере devpanel (/scripts/hostctl.sh)'];
+                break;
+            }
+            $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' clear-infra-logs 2>&1';
+            $output = [];
+            exec($cmd, $output, $return);
+            if ($return === 0) {
+                $actionResult = ['type' => 'success', 'message' => 'Логи инфраструктуры очищены'];
+                header('Location: ' . $_SERVER['PHP_SELF'] . '?page=infra');
+                exit;
+            }
+            $actionResult = ['type' => 'error', 'message' => 'Ошибка очистки логов: ' . implode("\n", array_slice($output, 0, 12))];
+            break;
+
+        case 'clear-project-logs':
+            $projectName = trim((string)($_POST['project_name'] ?? ''));
+            if ($projectName === '' || !preg_match('/^[a-z0-9\-\.]+$/i', $projectName)) {
+                $actionResult = ['type' => 'error', 'message' => 'Некорректное имя проекта.'];
+                break;
+            }
+            if (!file_exists($hostctlScript)) {
+                $actionResult = ['type' => 'error', 'message' => 'CLI hostctl не найден в контейнере devpanel (/scripts/hostctl.sh)'];
+                break;
+            }
+            $cmd = 'bash ' . escapeshellarg($hostctlScript) . ' clear-project-logs '
+                . escapeshellarg($projectName) . ' 2>&1';
+            $output = [];
+            exec($cmd, $output, $return);
+            if ($return === 0) {
+                $actionResult = ['type' => 'success', 'message' => "Логи проекта {$projectName} очищены"];
+                header('Location: ' . $_SERVER['PHP_SELF']);
+                exit;
+            }
+            $actionResult = ['type' => 'error', 'message' => 'Ошибка очистки логов: ' . implode("\n", array_slice($output, 0, 12))];
+            break;
 
     }
 }
@@ -2249,6 +2398,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 <?php endif; ?>
                     </div>
                         </div>
+        <div class="row mb-3">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <div>
+                            <strong>Логи инфраструктуры собирать:</strong>
+                            <div class="text-muted small">Режим определяет дополнительную запись в файлы; stdout/stderr всегда остаются источником для Loki/Grafana.</div>
+                        </div>
+                        <form method="POST" action="" class="d-flex gap-2 align-items-center">
+                            <input type="hidden" name="action" value="set-infra-file-logs">
+                            <select class="form-select form-select-sm" name="mode">
+                                <option value="off" <?= !$infraFileLogsEnabled ? 'selected' : '' ?>>только в stdout/stderr</option>
+                                <option value="on" <?= $infraFileLogsEnabled ? 'selected' : '' ?>>в stdout/stderr и файлы</option>
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-outline-primary">Сохранить</button>
+                        </form>
+                        <form method="POST" action="" class="d-flex gap-2 align-items-center" onsubmit="return confirm('Очистить логи инфраструктуры в Loki/Grafana и файловых логах?');">
+                            <input type="hidden" name="action" value="clear-infra-logs">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <i class="bi bi-trash3"></i> Очистить логи
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
         <?php elseif ($currentPage === 'hosts'): ?>
         <!-- Страница: Hosts -->
         <div class="row">
@@ -2424,6 +2599,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                         }
                         $isRunning = $runningCount > 0;
                         $domain = $project['name'];
+                        $projectFileLogsMode = devpanelProjectFileLogsMode($loggingMode, $project['name']);
                         $linkedHosts = [];
                         $deleteBlocked = false;
                         if (!empty($metadata['bitrix_type']) && in_array($metadata['bitrix_type'], ['kernel', 'ext_kernel'], true) && !empty($metadata['core_id'])) {
@@ -2591,6 +2767,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                 </div>
                             <?php endif; ?>
 
+                            <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                                <span class="text-muted small">Логи проекта собирать:</span>
+                                <form method="POST" action="" class="d-inline-flex gap-1 align-items-center">
+                                    <input type="hidden" name="action" value="set-project-file-logs">
+                                    <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
+                                    <select class="form-select form-select-sm" name="mode">
+                                        <option value="off" <?= $projectFileLogsMode === 'off' ? 'selected' : '' ?>>только в stdout/stderr</option>
+                                        <option value="on" <?= $projectFileLogsMode === 'on' ? 'selected' : '' ?>>в stdout/stderr и файлы</option>
+                                    </select>
+                                    <button type="submit" class="btn btn-sm btn-outline-primary">Сохранить</button>
+                                </form>
+                            </div>
+
                             <div class="btn-action-group">
                                 <form method="POST" action="" class="devpanel-host-action-form" style="display: inline;" data-action="<?= $isRunning ? 'stop' : 'start' ?>">
                                     <input type="hidden" name="action" value="<?= $isRunning ? 'stop' : 'start' ?>">
@@ -2616,6 +2805,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                                    class="btn btn-sm btn-info btn-action">
                                     <i class="bi bi-file-text"></i> Логи
                                 </a>
+
+                                <form method="POST" action="" style="display: inline;" onsubmit="return confirm('Очистить логи проекта в Loki/Grafana и файловых логах?');">
+                                    <input type="hidden" name="action" value="clear-project-logs">
+                                    <input type="hidden" name="project_name" value="<?= htmlspecialchars($project['name']) ?>">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger btn-action">
+                                        <i class="bi bi-trash3"></i> Очистить логи
+                                    </button>
+                                </form>
                                 
                                 <button type="button" 
                                         class="btn btn-sm btn-danger btn-action <?= $deleteBlocked ? 'disabled' : '' ?>" 

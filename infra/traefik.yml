@@ -30,9 +30,7 @@ providers:
 
 log:
   level: INFO
-  filePath: /logs/traefik.log
   format: json
 
 accessLog:
-  filePath: /logs/access.log
   format: json

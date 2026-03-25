@@ -39,6 +39,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN_SUFFIX:-loc}`)"
       - "traefik.http.routers.traefik.service=api@internal"
@@ -59,6 +60,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=true"
       - "traefik.http.routers.adminer.rule=Host(`adminer.${DOMAIN_SUFFIX:-loc}`)"
       - "traefik.http.routers.adminer.entrypoints=web"
@@ -82,6 +84,8 @@ services:
     networks:
       - infra_proxy
     command: redis-server --save 60 1 ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
+    labels:
+      - "pillat.project=infra"
     environment:
       - TZ=${TZ:-Europe/Moscow}
 
@@ -92,6 +96,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=false"
     environment:
       - TZ=${TZ:-Europe/Moscow}
@@ -102,10 +107,12 @@ services:
     restart: unless-stopped
     volumes:
       - loki_data_fallback:/loki
+      - ./loki-config.yml:/etc/loki/local-config.yaml:ro
     networks:
       - infra_proxy
     command: -config.file=/etc/loki/local-config.yaml
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=false"
     environment:
       - TZ=${TZ:-Europe/Moscow}
@@ -137,37 +144,61 @@ services:
             pipeline_stages:
               - docker: {}
               - regex:
-                  source: container
-                  expression: '^(?P<project_slug>[a-z0-9][a-z0-9.-]*?)-(php|nginx|mysql|postgres|mariadb|redis|memcached)(?:-[0-9]+)?$'
+                  expression: '(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\b'
+              - template:
+                  source: level
+                  template: '{{- $$r := ToLower .level_raw -}}{{- if eq $$r "warning" -}}warn{{- else if eq $$r "err" -}}error{{- else if ne $$r "" -}}{{$$r}}{{- else -}}info{{- end -}}'
               - labels:
-                  stream:
-                  project_slug:
+                  level:
+              - labeldrop:
+                  - filename
+                  - service_name
             relabel_configs:
               - source_labels: ['__meta_docker_container_name']
                 regex: '/(.*)'
                 target_label: 'container'
-              - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+              - source_labels: ['__meta_docker_container_label_pillat_project']
                 regex: '(.+)'
-                target_label: 'compose_project_raw'
-              - source_labels: ['project_slug']
-                regex: '^$'
-                target_label: 'project_slug'
-                replacement: 'infra'
-              - source_labels: ['project_slug']
                 target_label: 'project'
+              - source_labels: ['project']
+                regex: '^$'
+                replacement: 'infra'
+                target_label: 'project'
+              - source_labels: ['__meta_docker_container_log_stream']
+                regex: '(stdout|stderr)'
+                target_label: 'stream'
+              - source_labels: ['stream']
+                regex: '^$'
+                replacement: 'stdout'
+                target_label: 'stream'
+              - target_label: 'source'
+                replacement: 'docker'
               - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
                 regex: '(.+)'
                 target_label: 'service'
+              - source_labels: ['service']
+                regex: '^$'
+                replacement: 'unknown'
+                target_label: 'service'
           - job_name: fallback-system
+            pipeline_stages:
+              - labeldrop:
+                  - filename
             static_configs:
               - targets:
                   - localhost
                 labels:
                   job: fallback
+                  project: infra
+                  service: unknown
+                  source: file
+                  stream: stdout
+                  container: unknown
                   __path__: /var/log/*.log
         EOF
         exec /usr/bin/promtail -config.file=/tmp/promtail-fallback.yml
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=false"
     environment:
       - TZ=${TZ:-Europe/Moscow}
@@ -181,6 +212,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=true"
       - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN_SUFFIX:-loc}`)"
       - "traefik.http.routers.grafana.entrypoints=web"
@@ -215,6 +247,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=infra"
       - "traefik.enable=true"
       - "traefik.http.routers.devpanel.rule=Host(`docker.${DOMAIN_SUFFIX:-loc}`)"
       - "traefik.http.routers.devpanel.entrypoints=web"

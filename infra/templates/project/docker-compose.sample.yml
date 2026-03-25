@@ -13,7 +13,6 @@ services:
     container_name: project4-static-loc-php
     volumes:
       - ./www:/opt/www
-      - ./logs/php:/var/log/php
       - ./php.ini:/usr/local/etc/php/conf.d/custom.ini
       - ./xdebug.ini:/usr/local/etc/php/conf.d/xdebug.ini:ro
     environment:
@@ -24,6 +23,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=project4-static.loc"
       - "traefik.enable=false"
 
   nginx:
@@ -32,12 +32,12 @@ services:
     volumes:
       - ./www:/opt/www:ro
       - ./nginx/site.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./logs/nginx:/var/log/nginx
     depends_on:
       - php
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=project4-static.loc"
       - "traefik.enable=true"
       - "traefik.http.routers.project4-static.rule=Host(`project4-static.loc`)"
       - "traefik.http.routers.project4-static.entrypoints=web"

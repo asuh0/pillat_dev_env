@@ -278,10 +278,7 @@ echo "   🔌 DB внешний порт: $DB_EXTERNAL_PORT_VALUE"
 echo "   📋 Пресет: $PRESET"
 
 # Создание структуры директорий
-mkdir -p "$PROJECT_DIR"/{www,nginx,.vscode,logs/php,logs/nginx}
-touch "$PROJECT_DIR/logs/php/error.log"
-chmod 666 "$PROJECT_DIR/logs/php/error.log" 2>/dev/null || true
-chmod 777 "$PROJECT_DIR/logs/php" 2>/dev/null || true
+mkdir -p "$PROJECT_DIR"/{www,nginx,.vscode}
 if [ "$DB_TYPE" = "mysql" ]; then
     mkdir -p "$PROJECT_DIR/db-mysql"
 elif [ "$DB_TYPE" = "postgres" ]; then
@@ -325,7 +322,6 @@ services:
     env_file: .env
     volumes:
       - ./www:/opt/www
-      - ./logs/php:/var/log/php
       - ./php.ini:/usr/local/etc/php/conf.d/custom.ini
       - ./xdebug.ini:/usr/local/etc/php/conf.d/xdebug.ini:ro
       - ./php-fpm-error-log.conf:/usr/local/etc/php-fpm.d/zz-project-error-log.conf:ro
@@ -337,6 +333,7 @@ services:
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=${PROJECT_NAME}"
       - "traefik.enable=false"
 
   nginx:
@@ -345,12 +342,12 @@ services:
     volumes:
       - ./www:/opt/www:ro
       - ./nginx/site.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./logs/nginx:/var/log/nginx
     depends_on:
       - php
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=${PROJECT_NAME}"
       - "traefik.enable=true"
       - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.rule=Host(\`${PROJECT_NAME}\`)"
       - "traefik.http.routers.${PROJECT_NAME//./-}-nginx.entrypoints=websecure"
@@ -389,8 +386,9 @@ if [ "$DB_TYPE" = "mysql" ]; then
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=${PROJECT_NAME}"
       - "traefik.enable=false"
-    command: --general-log=1 --general-log-file=/var/lib/mysql/general.log --innodb_strict_mode=OFF
+    command: --innodb_strict_mode=OFF
 EOF
 elif [ "$DB_TYPE" = "postgres" ]; then
     cat >> "$PROJECT_DIR/docker-compose.yml" <<EOF
@@ -410,6 +408,7 @@ elif [ "$DB_TYPE" = "postgres" ]; then
     networks:
       - infra_proxy
     labels:
+      - "pillat.project=${PROJECT_NAME}"
       - "traefik.enable=false"
 EOF
 fi
@@ -499,7 +498,7 @@ max_execution_time = 300
 date.timezone = Europe/Moscow
 display_errors = ${DISPLAY_ERRORS}
 log_errors = On
-error_log = /var/log/php/error.log
+error_log = /proc/self/fd/2
 max_input_vars = 10000
 
 [opcache]
@@ -518,7 +517,7 @@ xdebug.mode=debug,develop
 xdebug.start_with_request=yes
 xdebug.client_host=host.docker.internal
 xdebug.client_port=9003
-xdebug.log=/var/log/php/xdebug.log
+xdebug.log=/dev/stderr
 xdebug.idekey=PHPSTORM
 ; Уровень лога: 1 по умолчанию; при диагностике можно поднять до 7
 xdebug.log_level=1
@@ -528,7 +527,7 @@ EOF
 # PHP-FPM: принудительно писать ошибки в файл (пул по умолчанию переопределяет php.ini)
 cat > "$PROJECT_DIR/php-fpm-error-log.conf" <<'FPMEOF'
 [www]
-php_admin_value[error_log] = /var/log/php/error.log
+php_admin_value[error_log] = /proc/self/fd/2
 php_admin_flag[log_errors] = on
 FPMEOF
 
@@ -540,8 +539,8 @@ server {
     root /opt/www;
     index index.php index.html index.htm;
 
-    access_log /var/log/nginx/access.log;
-    error_log /var/log/nginx/error.log;
+    access_log /dev/stdout;
+    error_log /dev/stderr;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
