@@ -39,7 +39,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "Единая метка проекта: `project_slug` (dash-формат, напр. `famil-pillat`). Используйте её для фильтрации всех логов проекта; `project` оставлен для совместимости.",
+        "content": "Единая метка проекта: **`project`** (значение лейбла Docker `pillat.project` у контейнеров или имя хоста из пути файловых логов). Фильтруйте по ней логи проекта в Loki.",
         "mode": "markdown"
       },
       "title": "Подсказка",
@@ -74,7 +74,7 @@
             "uid": "loki-infra"
           },
           "editorMode": "code",
-          "expr": "{job=\"docker\", project_slug=~\"$project_slug\", container=~\"$container\", stream=~\"$stream\"}",
+          "expr": "{job=\"docker\", project=~\"$project\", container=~\"$container\", stream=~\"$stream\"}",
           "queryType": "range",
           "refId": "A"
         }
@@ -111,7 +111,7 @@
             "uid": "loki-infra"
           },
           "editorMode": "code",
-          "expr": "{project_slug=~\"$project_slug\"}",
+          "expr": "{project=~\"$project\"}",
           "queryType": "range",
           "refId": "A"
         }
@@ -141,14 +141,14 @@
           "type": "loki",
           "uid": "loki-infra"
         },
-        "definition": "label_values({job=~\".+\"}, project_slug)",
+        "definition": "label_values({job=~\".+\"}, project)",
         "hide": 0,
         "includeAll": true,
-        "label": "Проект (slug)",
+        "label": "Проект",
         "multi": true,
-        "name": "project_slug",
+        "name": "project",
         "options": [],
-        "query": "label_values({job=~\".+\"}, project_slug)",
+        "query": "label_values({job=~\".+\"}, project)",
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
@@ -166,14 +166,14 @@
           "type": "loki",
           "uid": "loki-infra"
         },
-        "definition": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, container)",
+        "definition": "label_values({job=\"docker\", project=~\"$project\"}, container)",
         "hide": 0,
         "includeAll": true,
         "label": "Контейнер",
         "multi": true,
         "name": "container",
         "options": [],
-        "query": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, container)",
+        "query": "label_values({job=\"docker\", project=~\"$project\"}, container)",
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
@@ -191,14 +191,14 @@
           "type": "loki",
           "uid": "loki-infra"
         },
-        "definition": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, stream)",
+        "definition": "label_values({job=\"docker\", project=~\"$project\"}, stream)",
         "hide": 0,
         "includeAll": true,
         "label": "Поток",
         "multi": true,
         "name": "stream",
         "options": [],
-        "query": "label_values({job=\"docker\", project_slug=~\"$project_slug\"}, stream)",
+        "query": "label_values({job=\"docker\", project=~\"$project\"}, stream)",
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
@@ -215,5 +215,5 @@
   "timezone": "browser",
   "title": "Контейнеры: stdout / stderr (Loki)",
   "uid": "container-stdout-stderr",
-  "version": 4
+  "version": 5
 }

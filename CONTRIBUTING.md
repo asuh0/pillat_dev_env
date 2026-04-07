@@ -17,7 +17,7 @@
 - Пресеты в `presets/` (Bitrix, Laravel, WordPress, Static): install.sh, шаблоны, README.
 - DevPanel: интерфейс и логику в `infra/devpanel/src/index.php`.
 - Документация: README.md, комментарии в конфигах.
-- Конфигурации Traefik, Grafana, Loki, Promtail.
+- Конфигурации Traefik, Grafana, Loki, Grafana Alloy.
 
 ## Безопасность
 

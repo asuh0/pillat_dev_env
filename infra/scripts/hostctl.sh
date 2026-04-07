@@ -1452,9 +1452,17 @@ patch_project_ini_logging_mode() {
     local php_ini="$project_dir/php.ini"
     local xdebug_ini="$project_dir/xdebug.ini"
     local fpm_conf="$project_dir/php-fpm-error-log.conf"
+    local fpm_tpl="$INFRA_DIR/templates/php/php-fpm-docker-logs.conf"
     local target_php="/proc/self/fd/2"
     local target_nginx_stdout="/dev/stdout"
     local target_nginx_stderr="/dev/stderr"
+    if [ -f "$fpm_conf" ] && [ -f "$fpm_tpl" ] && grep -q '/proc/1/fd/1' "$fpm_conf" 2>/dev/null; then
+        cp "$fpm_conf" "${fpm_conf}.badproc1.bak" 2>/dev/null || true
+        cp "$fpm_tpl" "$fpm_conf"
+    elif [ -f "$fpm_conf" ] && [ -f "$fpm_tpl" ] && ! grep -q '^\[www\]' "$fpm_conf" 2>/dev/null; then
+        cp "$fpm_conf" "${fpm_conf}.legacy.bak" 2>/dev/null || true
+        cp "$fpm_tpl" "$fpm_conf"
+    fi
     if [ "$mode" = "on" ]; then
         target_php="/var/log/php/error.log"
     fi
@@ -1494,8 +1502,8 @@ patch_project_ini_logging_mode() {
 ensure_project_log_dirs_for_file_mode() {
     local project_dir="$1"
     mkdir -p "$project_dir/logs/php" "$project_dir/logs/nginx"
-    touch "$project_dir/logs/php/error.log" "$project_dir/logs/php/xdebug.log" "$project_dir/logs/nginx/access.log" "$project_dir/logs/nginx/error.log"
-    chmod 666 "$project_dir/logs/php/error.log" "$project_dir/logs/php/xdebug.log" "$project_dir/logs/nginx/access.log" "$project_dir/logs/nginx/error.log" 2>/dev/null || true
+    touch "$project_dir/logs/php/error.log" "$project_dir/logs/php/fpm-access.log" "$project_dir/logs/php/xdebug.log" "$project_dir/logs/nginx/access.log" "$project_dir/logs/nginx/error.log"
+    chmod 666 "$project_dir/logs/php/error.log" "$project_dir/logs/php/fpm-access.log" "$project_dir/logs/php/xdebug.log" "$project_dir/logs/nginx/access.log" "$project_dir/logs/nginx/error.log" 2>/dev/null || true
 }
 
 clear_project_file_logs() {
@@ -1557,6 +1565,7 @@ clear_project_runtime_logs() {
     local project_dir="$2"
     clear_project_file_logs "$project_dir"
     truncate_if_oversize "$project_dir/logs/php/error.log" 10485760
+    truncate_if_oversize "$project_dir/logs/php/fpm-access.log" 10485760
     truncate_if_oversize "$project_dir/logs/php/xdebug.log" 10485760
     truncate_if_oversize "$project_dir/logs/nginx/access.log" 10485760
     truncate_if_oversize "$project_dir/logs/nginx/error.log" 10485760
@@ -3234,7 +3243,7 @@ runtime_infra_up() {
         fi
 
         echo "   ⚠️  Обнаружена ошибка bind-mount. Пробуем fallback-режим инфраструктуры..."
-        echo "      (полный стек без bind-монтов: traefik/adminer/redis/loki/promtail/grafana/devpanel)"
+        echo "      (полный стек без bind-монтов: traefik/adminer/redis/loki/alloy/grafana/devpanel)"
 
         if ! prepare_fallback_tls_assets; then
             echo "   ❌ Не удалось подготовить TLS-сертификаты для fallback-режима."
@@ -4357,8 +4366,8 @@ start_host() {
     # Режим file-logging создаёт каталоги логов; в stdout/stderr режиме не трогаем файловую структуру.
     if [ "$project_file_logs_mode" = "on" ]; then
         mkdir -p "$project_dir/logs/php"
-        touch "$project_dir/logs/php/error.log"
-        chmod 666 "$project_dir/logs/php/error.log" 2>/dev/null || true
+        touch "$project_dir/logs/php/error.log" "$project_dir/logs/php/fpm-access.log"
+        chmod 666 "$project_dir/logs/php/error.log" "$project_dir/logs/php/fpm-access.log" 2>/dev/null || true
         chmod 777 "$project_dir/logs/php" 2>/dev/null || true
     fi
 
@@ -4368,11 +4377,7 @@ start_host() {
         rm -rf "$fpm_conf"
     fi
     if [ ! -f "$fpm_conf" ]; then
-        cat > "$fpm_conf" <<'FPMEOF'
-[www]
-php_admin_value[error_log] = /proc/self/fd/2
-php_admin_flag[log_errors] = on
-FPMEOF
+        cp "$INFRA_DIR/templates/php/php-fpm-docker-logs.conf" "$fpm_conf"
         ensure_php_fpm_error_log_conf_in_compose "$compose_file" "$project_dir" || true
     fi
     patch_project_ini_logging_mode "$project_dir" "$project_file_logs_mode"

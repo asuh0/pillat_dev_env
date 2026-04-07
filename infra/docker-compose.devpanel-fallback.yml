@@ -7,6 +7,7 @@ volumes:
   redis_data:
   grafana_data_fallback:
   loki_data_fallback:
+  alloy_data_fallback:
   devpanel_projects:
   devpanel_config:
   devpanel_logs:
@@ -117,86 +118,20 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
 
-  promtail:
-    image: grafana/promtail:latest
-    container_name: promtail
+  alloy:
+    image: grafana/alloy:v1.10.1
+    container_name: alloy
     restart: unless-stopped
     volumes:
+      - ./alloy-config.fallback.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data_fallback:/var/lib/alloy/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - infra_proxy
-    entrypoint: ["/bin/sh", "-ec"]
     command:
-      - |
-        cat >/tmp/promtail-fallback.yml <<'EOF'
-        server:
-          http_listen_port: 9080
-          grpc_listen_port: 0
-        positions:
-          filename: /tmp/positions.yml
-        clients:
-          - url: http://loki:3100/loki/api/v1/push
-        scrape_configs:
-          - job_name: docker
-            docker_sd_configs:
-              - host: unix:///var/run/docker.sock
-                refresh_interval: 5s
-            pipeline_stages:
-              - docker: {}
-              - regex:
-                  expression: '(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\b'
-              - template:
-                  source: level
-                  template: '{{- $$r := ToLower .level_raw -}}{{- if eq $$r "warning" -}}warn{{- else if eq $$r "err" -}}error{{- else if ne $$r "" -}}{{$$r}}{{- else -}}info{{- end -}}'
-              - labels:
-                  level:
-              - labeldrop:
-                  - filename
-                  - service_name
-            relabel_configs:
-              - source_labels: ['__meta_docker_container_name']
-                regex: '/(.*)'
-                target_label: 'container'
-              - source_labels: ['__meta_docker_container_label_pillat_project']
-                regex: '(.+)'
-                target_label: 'project'
-              - source_labels: ['project']
-                regex: '^$'
-                replacement: 'infra'
-                target_label: 'project'
-              - source_labels: ['__meta_docker_container_log_stream']
-                regex: '(stdout|stderr)'
-                target_label: 'stream'
-              - source_labels: ['stream']
-                regex: '^$'
-                replacement: 'stdout'
-                target_label: 'stream'
-              - target_label: 'source'
-                replacement: 'docker'
-              - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
-                regex: '(.+)'
-                target_label: 'service'
-              - source_labels: ['service']
-                regex: '^$'
-                replacement: 'unknown'
-                target_label: 'service'
-          - job_name: fallback-system
-            pipeline_stages:
-              - labeldrop:
-                  - filename
-            static_configs:
-              - targets:
-                  - localhost
-                labels:
-                  job: fallback
-                  project: infra
-                  service: unknown
-                  source: file
-                  stream: stdout
-                  container: unknown
-                  __path__: /var/log/*.log
-        EOF
-        exec /usr/bin/promtail -config.file=/tmp/promtail-fallback.yml
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
     labels:
       - "pillat.project=infra"
       - "traefik.enable=false"

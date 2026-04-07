@@ -1,0 +1,340 @@
+// Сбор логов в Loki (замена Promtail). Пути — как в бывшем promtail-config.yml (монты compose).
+
+loki.write "infra" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
+
+// --- Docker: метки целей как у promtail docker_sd; stream — из stage.docker (JSON docker logs).
+
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+}
+
+discovery.relabel "docker_targets" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+		replacement   = "$1"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_label_pillat_project"]
+		regex         = "(.+)"
+		target_label  = "project"
+		replacement   = "$1"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["project"]
+		regex         = "^$"
+		target_label  = "project"
+		replacement   = "infra"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_id"]
+		regex         = "(.+)"
+		target_label  = "source"
+		replacement   = "docker"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(.+)"
+		target_label  = "service"
+		replacement   = "$1"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["service"]
+		regex         = "^$"
+		target_label  = "service"
+		replacement   = "unknown"
+		action        = "replace"
+	}
+}
+
+loki.source.docker "docker" {
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.relabel.docker_targets.output
+	forward_to       = [loki.process.docker_logs.receiver]
+	refresh_interval = "5s"
+	labels           = {
+		job = "docker",
+	}
+}
+
+loki.process "docker_logs" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.docker {}
+
+	stage.regex {
+		expression = "(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			level  = "",
+			stream = "stream",
+		}
+	}
+
+	// PHP-FPM пишет вывод воркеров в stderr контейнера; строки приложения (JSON с «{»)
+	// помечаем stream=stdout для фильтров в Grafana (не меняет реальный FD в Docker).
+	stage.match {
+		selector = "{service=\"php\"} |~ \"^\\\\s*\\\\{\""
+		stage.labels {
+			values = {
+				stream = "stdout",
+			}
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename", "service_name"]
+	}
+}
+
+// --- Файлы: traefik
+
+local.file_match "traefik" {
+	path_targets = [{
+		__path__    = "/logs/traefik/*.log",
+		__address__ = "localhost",
+		job         = "traefik",
+		project     = "infra",
+		service     = "traefik",
+		source      = "file",
+		stream      = "stdout",
+		container   = "unknown",
+	}]
+	sync_period = "10s"
+}
+
+loki.source.file "traefik" {
+	targets    = local.file_match.traefik.targets
+	forward_to = [loki.process.traefik.receiver]
+}
+
+loki.process "traefik" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.json {
+		expressions = { level_raw = "level" }
+	}
+
+	stage.regex {
+		expression = "(?i)(?P<level_hint>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- $h := ToLower .level_hint -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else if eq $h \"warning\" -}}warn{{- else if eq $h \"err\" -}}error{{- else if ne $h \"\" -}}{{$h}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			level = "",
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename"]
+	}
+}
+
+// --- Файлы: php (project из пути)
+
+local.file_match "php" {
+	path_targets = [{
+		__path__    = "/projects/*/logs/php/*.log",
+		__address__ = "localhost",
+		job         = "php",
+		service     = "php",
+		source      = "file",
+		stream      = "stdout",
+		container   = "unknown",
+	}]
+	sync_period = "10s"
+}
+
+loki.source.file "php" {
+	targets    = local.file_match.php.targets
+	forward_to = [loki.process.php.receiver]
+}
+
+loki.process "php" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.regex {
+		source     = "filename"
+		expression = "^/projects/(?P<project>[^/]+)/logs/php/.*$"
+	}
+
+	stage.regex {
+		expression = "(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			project = "",
+			level   = "",
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename"]
+	}
+}
+
+// --- Файлы: nginx
+
+local.file_match "nginx" {
+	path_targets = [{
+		__path__    = "/projects/*/logs/nginx/*.log",
+		__address__ = "localhost",
+		job         = "nginx",
+		service     = "nginx",
+		source      = "file",
+		stream      = "stdout",
+		container   = "unknown",
+	}]
+	sync_period = "10s"
+}
+
+loki.source.file "nginx" {
+	targets    = local.file_match.nginx.targets
+	forward_to = [loki.process.nginx.receiver]
+}
+
+loki.process "nginx" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.regex {
+		source     = "filename"
+		expression = "^/projects/(?P<project>[^/]+)/logs/nginx/.*$"
+	}
+
+	stage.regex {
+		expression = "(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			project = "",
+			level   = "",
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename"]
+	}
+}
+
+// --- MySQL / Postgres
+
+local.file_match "mysql" {
+	path_targets = [{
+		__path__    = "/logs/db/mysql/*.log",
+		__address__ = "localhost",
+		job         = "mysql",
+		project     = "infra",
+		service     = "mysql",
+		source      = "file",
+		stream      = "stdout",
+		container   = "unknown",
+	}]
+	sync_period = "10s"
+}
+
+loki.source.file "mysql" {
+	targets    = local.file_match.mysql.targets
+	forward_to = [loki.process.mysql.receiver]
+}
+
+loki.process "mysql" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.regex {
+		expression = "(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			level = "",
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename"]
+	}
+}
+
+local.file_match "postgres" {
+	path_targets = [{
+		__path__    = "/logs/db/postgres/*.log",
+		__address__ = "localhost",
+		job         = "postgres",
+		project     = "infra",
+		service     = "postgres",
+		source      = "file",
+		stream      = "stdout",
+		container   = "unknown",
+	}]
+	sync_period = "10s"
+}
+
+loki.source.file "postgres" {
+	targets    = local.file_match.postgres.targets
+	forward_to = [loki.process.postgres.receiver]
+}
+
+loki.process "postgres" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.regex {
+		expression = "(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			level = "",
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename"]
+	}
+}

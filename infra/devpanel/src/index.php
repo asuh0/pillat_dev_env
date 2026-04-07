@@ -851,7 +851,7 @@ function getInfraStatus() {
         'redis' => ['name' => 'Redis', 'status' => 'Down', 'container' => null],
         'memcached' => ['name' => 'Memcached', 'status' => 'Down', 'container' => null],
         'loki' => ['name' => 'Loki', 'status' => 'Down', 'container' => null],
-        'promtail' => ['name' => 'Promtail', 'status' => 'Down', 'container' => null],
+        'alloy' => ['name' => 'Alloy', 'status' => 'Down', 'container' => null],
         'grafana' => ['name' => 'Grafana', 'status' => 'Down', 'container' => null],
         'devpanel' => ['name' => 'DevPanel', 'status' => 'Down', 'container' => null],
     ];
@@ -880,9 +880,9 @@ function getInfraStatus() {
         } elseif ($name === 'loki') {
             $services['loki']['status'] = $isUp ? 'Up' : 'Down';
             $services['loki']['container'] = $containerName;
-        } elseif ($name === 'promtail') {
-            $services['promtail']['status'] = $isUp ? 'Up' : 'Down';
-            $services['promtail']['container'] = $containerName;
+        } elseif ($name === 'alloy') {
+            $services['alloy']['status'] = $isUp ? 'Up' : 'Down';
+            $services['alloy']['container'] = $containerName;
         } elseif ($name === 'grafana') {
             $services['grafana']['status'] = $isUp ? 'Up' : 'Down';
             $services['grafana']['container'] = $containerName;
@@ -2351,7 +2351,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hosts_compare']) && i
                 'redis' => ['icon' => 'bi-memory', 'color' => 'danger', 'desc' => 'Кэш и сессии', 'path' => ''],
                 'memcached' => ['icon' => 'bi-hdd-network', 'color' => 'warning', 'desc' => 'Кэш (memcached)', 'path' => ''],
                 'loki' => ['icon' => 'bi-journal-text', 'color' => 'info', 'desc' => 'Хранилище логов', 'path' => ''],
-                'promtail' => ['icon' => 'bi-collection', 'color' => 'info', 'desc' => 'Сбор логов', 'path' => ''],
+                'alloy' => ['icon' => 'bi-collection', 'color' => 'info', 'desc' => 'Сбор логов (Grafana Alloy)', 'path' => ''],
                 'grafana' => ['icon' => 'bi-graph-up', 'color' => 'info', 'desc' => 'Логи и метрики', 'path' => ''],
                 'devpanel' => ['icon' => 'bi-boxes', 'color' => 'secondary', 'desc' => 'Эта панель', 'path' => '', 'linkKey' => 'docker'],
             ];

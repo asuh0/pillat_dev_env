@@ -69,7 +69,7 @@ bash ./infra/scripts/start-all.sh
 127.0.0.1 grafana.loc
 ```
 
-Логи контейнеров в Loki (stdout/stderr через Promtail + Docker): см. `infra/docs/GRAFANA-CONTAINER-STDOUT-STDERR.md`.
+Логи контейнеров в Loki (stdout/stderr через Grafana Alloy + Docker): см. `infra/docs/GRAFANA-CONTAINER-STDOUT-STDERR.md`.
 
 Актуальный список доменов см. в DevPanel (блок «Конфигурация /etc/hosts»).
 
@@ -186,7 +186,7 @@ bash ./hostctl.sh logs --tail 200
 
 ### Логи проектов
 
-По умолчанию проектные логи идут в `stdout/stderr` контейнеров (`php`, `nginx`) и попадают в Loki/Grafana через `promtail` + `docker_sd`.
+По умолчанию проектные логи идут в `stdout/stderr` контейнеров (`php`, `nginx`) и попадают в Loki/Grafana через **Grafana Alloy** (`loki.source.docker` и файловые источники).
 
 - Включение file-logging для проекта:
   - через CLI: `bash ./hostctl.sh set-project-file-logs <host> on`
@@ -223,7 +223,7 @@ bash ./hostctl.sh logs --tail 200
 
 ### Единые лейблы в Loki
 
-Для docker- и file-потоков в индекс попадает только этот набор (дополнительные служебные метки вроде `filename` отбрасываются на стороне Promtail):
+Для docker- и file-потоков в индекс попадает только этот набор (дополнительные служебные метки вроде `filename` отбрасываются в pipeline Alloy):
 
 - `project` — домен хоста (например `<link_host>`) или `infra`; для docker без `pillat.project` — `infra`
 - `service` — сервис Compose (`php`, `nginx`, …) или `unknown`, если метка не задана
@@ -231,14 +231,14 @@ bash ./hostctl.sh logs --tail 200
 - `level` — `error|warn|info|debug|notice` (по умолчанию `info`)
 - `source` — `docker` или `file`
 - `container` — имя контейнера (для file scrape — `unknown`)
-- `job` — имя scrape job в `promtail-config.yml` (`docker`, `php`, `nginx`, `traefik`, `mysql`, `postgres`, …)
+- `job` — логический источник в `infra/alloy-config.alloy` (`docker`, `php`, `nginx`, `traefik`, `mysql`, `postgres`, …)
 
 Старые временные ряды с прежними лейблами (`project_slug`, `compose_project_raw`, …) могут ещё отображаться в Grafana до срока хранения/удаления в Loki.
 
 Рекомендуемые фильтры:
 
-- проект целиком: `{project="famil.pillat"}`
-- только nginx проекта: `{project="famil.pillat", service="nginx"}`
+- проект целиком: `{project="<link_host>"}`
+- только nginx проекта: `{project="<link_host>", service="nginx"}`
 - ошибки инфраструктуры: `{project="infra", level="error"}`
 
 **Инфра-конфиг** — `infra/config/`:

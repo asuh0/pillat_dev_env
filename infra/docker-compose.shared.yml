@@ -21,12 +21,12 @@ volumes:
       type: none
       o: bind
       device: ${PWD}/../shared-volumes/loki-data
-  promtail_positions:
+  alloy_data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${PWD}/../shared-volumes/promtail-positions
+      device: ${PWD}/../shared-volumes/alloy-data
 
 services:
   traefik:
@@ -125,19 +125,22 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
 
-  promtail:
-    image: grafana/promtail:latest
-    container_name: promtail
+  alloy:
+    image: grafana/alloy:v1.10.1
+    container_name: alloy
     restart: unless-stopped
     volumes:
-      - ./promtail-config.yml:/etc/promtail/config.yml:ro
-      - promtail_positions:/var/lib/promtail
+      - ./alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
       - ../logs:/logs:ro
       - ../projects:/projects:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - infra_proxy
-    command: -config.file=/etc/promtail/config.yml
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
     labels:
       - "pillat.project=infra"
       - "traefik.enable=false"

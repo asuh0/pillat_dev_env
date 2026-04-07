@@ -524,12 +524,8 @@ xdebug.log_level=1
 
 EOF
 
-# PHP-FPM: принудительно писать ошибки в файл (пул по умолчанию переопределяет php.ini)
-cat > "$PROJECT_DIR/php-fpm-error-log.conf" <<'FPMEOF'
-[www]
-php_admin_value[error_log] = /proc/self/fd/2
-php_admin_flag[log_errors] = on
-FPMEOF
+# PHP-FPM: stdout контейнера для access/error и вывода воркеров (см. шаблон).
+cp "$TEMPLATES_DIR/php/php-fpm-docker-logs.conf" "$PROJECT_DIR/php-fpm-error-log.conf"
 
 # Создание nginx конфигурации
 cat > "$PROJECT_DIR/nginx/site.conf" <<EOF

@@ -1,0 +1,104 @@
+// Fallback-стек: только docker → Loki (без bind-монтов logs/projects).
+
+loki.write "infra" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
+
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+}
+
+discovery.relabel "docker_targets" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+		replacement   = "$1"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_label_pillat_project"]
+		regex         = "(.+)"
+		target_label  = "project"
+		replacement   = "$1"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["project"]
+		regex         = "^$"
+		target_label  = "project"
+		replacement   = "infra"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_id"]
+		regex         = "(.+)"
+		target_label  = "source"
+		replacement   = "docker"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(.+)"
+		target_label  = "service"
+		replacement   = "$1"
+		action        = "replace"
+	}
+	rule {
+		source_labels = ["service"]
+		regex         = "^$"
+		target_label  = "service"
+		replacement   = "unknown"
+		action        = "replace"
+	}
+}
+
+loki.source.docker "docker" {
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.relabel.docker_targets.output
+	forward_to       = [loki.process.docker_logs.receiver]
+	refresh_interval = "5s"
+	labels           = {
+		job = "docker",
+	}
+}
+
+loki.process "docker_logs" {
+	forward_to = [loki.write.infra.receiver]
+
+	stage.docker {}
+
+	stage.regex {
+		expression = "(?i)(?P<level_raw>error|warn(?:ing)?|debug|info|notice|err)\\b"
+	}
+
+	stage.template {
+		source   = "level"
+		template = "{{- $r := ToLower .level_raw -}}{{- if eq $r \"warning\" -}}warn{{- else if eq $r \"err\" -}}error{{- else if ne $r \"\" -}}{{$r}}{{- else -}}info{{- end -}}"
+	}
+
+	stage.labels {
+		values = {
+			level  = "",
+			stream = "stream",
+		}
+	}
+
+	stage.match {
+		selector = "{service=\"php\"} |~ \"^\\\\s*\\\\{\""
+		stage.labels {
+			values = {
+				stream = "stdout",
+			}
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename", "service_name"]
+	}
+}
